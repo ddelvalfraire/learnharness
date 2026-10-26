@@ -294,7 +294,6 @@ export class SessionModel {
 		return this.statusValue;
 	}
 
-	/** Mutate model state + notify (the hook re-renders). */
 	private mutate(fn: () => void): void {
 		this.revision++;
 		fn();
@@ -742,8 +741,7 @@ export class SessionModel {
 		}
 	}
 
-	/** Local detach: cancel the consume, keep the partial tail. The page's
-	 *  settle watch adopts the record when the server turn finishes. */
+	/** Disconnect the client without stopping the server's turn. */
 	stop(): void {
 		this.revision++;
 		this.consumeAbort?.abort();
@@ -754,8 +752,6 @@ export class SessionModel {
 		this.setStatus("ready");
 	}
 
-	/** Refresh only a view that has not advanced since this request began.
-	 * A full swap must never erase an optimistic answer or a live stream. */
 	async syncRecord({ continueTurn = false }: { continueTurn?: boolean } = {}): Promise<SessionRecord | null> {
 		const canContinue = continueTurn && this.readyRef;
 		const revision = this.revision;
@@ -764,11 +760,11 @@ export class SessionModel {
 		if (!res.ok) return null;
 		const record = (await res.json()) as SessionRecord;
 		if (!Array.isArray(record.messages)) return null;
+		// A late response must not replace an answer or newer streamed messages.
 		if (request !== this.recordRequest || revision !== this.revision) return null;
 		if (this.statusValue === "submitted" || this.statusValue === "streaming" || record.turnInFlight === true) return null;
 		this.setMessages(record.messages);
-		// The rejected input's optimistic copy is gone. Confirmed server
-		// idleness lets the learner submit again; retain the error until then.
+		// Allow another submission, but keep the error visible until the learner retries.
 		if (this.statusValue === "error" && record.turnInFlight === false) this.setStatus("ready");
 		if (canContinue && this.readyRef && needsContinuation(record.messages)) {
 			void this.send({ type: "continue" });
@@ -776,13 +772,12 @@ export class SessionModel {
 		return record;
 	}
 
-	/** Full snapshot swap (the idle settle sync — server canon). */
 	setMessages(record: LhMessage[]): void {
 		this.mutate(() => {
 			this.base = record;
 			this.incompleteUsageIds.clear();
 			this.tail = [];
-			this.streamingMessageId = null; // the tail (and its slot) is gone
+			this.streamingMessageId = null;
 		});
 	}
 
