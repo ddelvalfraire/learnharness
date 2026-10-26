@@ -41,12 +41,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 	if (!details || (details.kind !== "demo" && details.kind !== "visual")) {
 		return Response.json({ error: "No demo/figure steer with that message id" }, { status: 400 });
 	}
-	if (typeof details.artifactId === "string") {
-		const job = stores.jobStore.getJob(details.artifactId);
-		if (!job || job.chatId !== id) return Response.json({ error: "Artifact unavailable" }, { status: 400 });
+	const artifactId = details.artifactId ?? details.jobId;
+	const job = typeof artifactId === "string" ? stores.jobStore.getJob(artifactId) : null;
+	if (job && job.chatId !== id) return Response.json({ error: "Artifact unavailable" }, { status: 400 });
+	if (job) {
 		stores.jobStore.updateJob(job.id, { ui: { ...job.ui, inverted: input.inverted } });
 		return Response.json({ ok: true });
 	}
+	if (details.artifactId) return Response.json({ error: "Artifact unavailable" }, { status: 400 });
 
 	const messages = setSteerUiInverted(chat.messages, input.messageId, input.inverted);
 	stores.chatStore.saveMessages(id, messages);

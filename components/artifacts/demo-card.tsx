@@ -151,6 +151,7 @@ function DemoFrame({
 	// page + content together while hue-rotate(180deg) undoes invert's hue
 	// flip.
 	const [inverted, setInverted] = useState(initialInverted);
+	useEffect(() => setInverted(initialInverted), [initialInverted]);
 	const toggleInverted = (next: boolean) => {
 		setInverted(next);
 		if (!actions?.chatId || (!artifactId && !messageId)) return;

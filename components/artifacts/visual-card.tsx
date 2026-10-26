@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { ChatActionsContext } from "@/components/chat";
 import { DownloadIcon, MaximizeIcon } from "lucide-react";
 import { InvertDiscIcon } from "@/components/artifacts/invert-disc";
@@ -72,6 +72,7 @@ export function VisualOutputCard({
 	// previews) it stays local-only. The toggled state also feeds the
 	// fullscreen overlay (openFigure).
 	const [inverted, setInverted] = useState(initialInverted);
+	useEffect(() => setInverted(initialInverted), [initialInverted]);
 	const toggleInverted = (next: boolean) => {
 		setInverted(next);
 		if (!actions?.chatId || (!artifactId && !messageId)) return;

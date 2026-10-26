@@ -24,6 +24,8 @@ const { beginTurn, endTurn } = await import("../src/server/turn-liveness.ts");
 const { POST } = await import("../app/api/chats/[id]/artifact-ui/route.ts");
 const { JobArtifactCard } = await import("../components/artifacts/job-artifact-card.tsx");
 const { SubagentSteerCard } = await import("../components/artifacts/steer-card.tsx");
+const { DemoOutputCard } = await import("../components/artifacts/demo-card.tsx");
+const { VisualOutputCard } = await import("../components/artifacts/visual-card.tsx");
 const { JobsContext, ArtifactSlotsContext } = await import("../components/jobs-context.ts");
 const { buildSubagentSteer } = await import("../src/core/contracts/jobs.ts");
 
@@ -288,6 +290,43 @@ test("legacy completed jobs stay delivered when compaction removed their marker"
 	assert.equal(jobStore.getJob(job.id)?.delivery?.state, "delivered");
 	assert.equal(jobHasWork(jobStore.getJob(job.id)!), false);
 });
+
+test("legacy message-addressed preference writes update the canonical artifact", async () => {
+	const { chat, job } = fixture();
+	const legacy = { ...job, status: "done", result };
+	delete legacy.delivery;
+	const marker = buildSubagentSteer({ id: job.id, kind: "demo", toolCallId: "demo-call" }, result);
+	chatStore.saveMessages(chat.id, [assistant, marker]);
+	fs.writeFileSync(path.join(scratch, "jobs", `${job.id}.json`), JSON.stringify(legacy));
+	jobStore.updateJob(job.id, { ui: { inverted: true } });
+	const response = await POST(new Request("http://fixture/artifact-ui", { method: "POST",
+		body: JSON.stringify({ input: { messageId: marker.id, inverted: false } }),
+	}), { params: Promise.resolve({ id: chat.id }) });
+	assert.equal(response.status, 200);
+	assert.equal(jobStore.getJob(job.id)?.ui?.inverted, false, "legacy addressing must not leave the artifact preference stale");
+});
+
+for (const kind of ["demo", "visual"] as const) {
+	test(`${kind} applies a loaded brightness preference without recreating its content`, async () => {
+		const { window, document } = parseHTML("<html><body><main></main></body></html>");
+		Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
+		const { createRoot } = await import("react-dom/client");
+		const mount = document.querySelector("main");
+		assert.ok(mount);
+		const root = createRoot(mount);
+		const card = (inverted: boolean) => kind === "demo"
+			? <DemoOutputCard output={result} initialInverted={inverted} />
+			: <VisualOutputCard output={{ svg: '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4" /></svg>' }} initialInverted={inverted} />;
+		try {
+			await act(async () => root.render(card(false)));
+			const content = document.querySelector(kind === "demo" ? "iframe" : '[data-testid="visual-svg"]');
+			assert.ok(content);
+			await act(async () => root.render(card(true)));
+			assert.equal(document.querySelector('[role="switch"]')?.getAttribute("aria-checked"), "true");
+			assert.equal(document.querySelector(kind === "demo" ? "iframe" : '[data-testid="visual-svg"]'), content);
+		} finally { await act(async () => root.unmount()); }
+	});
+}
 
 test("delivery and repeated jobs updates preserve one iframe and local brightness", async () => {
 	const { chat, job } = fixture();
