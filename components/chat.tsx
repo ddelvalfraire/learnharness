@@ -711,7 +711,7 @@ export function Chat({
 	useEnterSubmits(sendNext);
 
 	const syncFromServer = useCallback(async () => {
-		const record = await syncRecord();
+		const record = await syncRecord({ continueTurn: true });
 		if (!record) return;
 		if (Array.isArray(record.turns)) setTurns(record.turns);
 		setPricing(record.pricing);
@@ -916,6 +916,7 @@ export function Chat({
 		const was = prevErrorStatusRef.current;
 		prevErrorStatusRef.current = status;
 		if (was === "error" || status !== "error") return;
+		if (parseModelsRefusal(error?.message) || parseProviderKeyRefusal(error?.message)) return;
 		let cancelled = false;
 		void (async () => {
 			try {
@@ -932,7 +933,7 @@ export function Chat({
 		return () => {
 			cancelled = true;
 		};
-	}, [status, chatId, syncFromServer]);
+	}, [status, error, chatId, syncFromServer]);
 
 	// ── Central job observability (contracts.ts "THE ASYNC PROTOCOL" §4) ──
 	// ONE fetch of /api/jobs drives every job surface (transcript dispatch

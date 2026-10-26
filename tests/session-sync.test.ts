@@ -213,6 +213,52 @@ describe("session snapshot synchronization", () => {
 		assert.equal(pending(model), null, "the old snapshot must not reopen the question");
 	});
 
+	for (const continueTurn of [false, true]) it(`does not automatically retry a refused continuation during ${continueTurn ? "error" : "setup"} reconciliation`, async () => {
+		const owed = [old, newAnswerResult("old", "probe", answer("old"))];
+		let posts = 0;
+		const model = new SessionModel({
+			chatId: "sync", initialMessages: owed,
+			fetch: async (url) => {
+				if (url === "/api/chat") {
+					posts++;
+					return Response.json({ error: "models_not_configured" }, { status: 503 });
+				}
+				return snapshot(owed);
+			},
+		});
+		await model.send({ type: "continue" });
+		assert.equal(model.status, "error");
+		await model.syncRecord({ continueTurn });
+		assert.equal(posts, 1, "reconciling the setup refusal must wait for the learner to retry");
+		assert.equal(model.status, "ready");
+	});
+
+	it("continues an owed turn when the normal settle refresh requests it", async () => {
+		const owed = [old, newAnswerResult("old", "probe", answer("old"))];
+		const posts: string[] = [];
+		const settled = deferred<void>();
+		const model = new SessionModel({
+			chatId: "sync", initialMessages: owed,
+			onChange: () => {
+				if (posts.length === 1 && model.status === "ready") settled.resolve();
+			},
+			fetch: async (url, init) => {
+				if (url === "/api/chats/sync" && posts.length === 0) return snapshot(owed);
+				if (url === "/api/chat") {
+					posts.push(String(init?.body));
+					return Response.json({ ok: true });
+				}
+				if (url === "/api/chats/sync/stream") return done();
+				return snapshot(canonical);
+			},
+		});
+		await model.syncRecord({ continueTurn: true });
+		await settled.promise;
+		assert.equal(posts.length, 1);
+		assert.deepEqual(JSON.parse(posts[0] ?? ""), { chatId: "sync", input: { type: "continue" } });
+		assert.equal(pending(model), "current");
+	});
+
 	it("does not let an old refresh undo an append-only server update", async () => {
 		const held = deferred<Response>();
 		const model = new SessionModel({ chatId: "sync", initialMessages: [old], fetch: async () => held.promise });

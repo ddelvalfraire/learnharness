@@ -115,7 +115,7 @@ export function useChatSession({ chatId, initialMessages, initiallyInFlight }: U
 		(problemCallId: string) => void model.dismissProblem(problemCallId),
 		[model],
 	);
-	const syncRecord = useCallback(() => model.syncRecord(), [model]);
+	const syncRecord = useCallback((...args: Parameters<SessionModel["syncRecord"]>) => model.syncRecord(...args), [model]);
 	const adoptRecord = useCallback((record: LhMessage[]) => model.adoptRecord(record), [model]);
 	const stop = useCallback(() => model.stop(), [model]);
 	const clearError = useCallback(() => model.clearError(), [model]);

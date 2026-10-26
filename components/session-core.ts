@@ -756,7 +756,8 @@ export class SessionModel {
 
 	/** Refresh only a view that has not advanced since this request began.
 	 * A full swap must never erase an optimistic answer or a live stream. */
-	async syncRecord(): Promise<SessionRecord | null> {
+	async syncRecord({ continueTurn = false }: { continueTurn?: boolean } = {}): Promise<SessionRecord | null> {
+		const canContinue = continueTurn && this.readyRef;
 		const revision = this.revision;
 		const request = ++this.recordRequest;
 		const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`);
@@ -769,7 +770,7 @@ export class SessionModel {
 		// The rejected input's optimistic copy is gone. Confirmed server
 		// idleness lets the learner submit again; retain the error until then.
 		if (this.statusValue === "error" && record.turnInFlight === false) this.setStatus("ready");
-		if (this.statusValue === "ready" && needsContinuation(record.messages)) {
+		if (canContinue && this.readyRef && needsContinuation(record.messages)) {
 			void this.send({ type: "continue" });
 		}
 		return record;
