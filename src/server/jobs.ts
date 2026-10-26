@@ -152,7 +152,16 @@ export function deliverJobResult(steer: SteerMessage): Promise<void> {
 		}
 		const queue = s.queues.get(chatId) ?? [];
 		const existing = [...queue, ...(s.delivering.get(chatId) ?? [])].find((entry) => entry.steer.id === steer.id);
-		if (existing) { existing.observers.push({ resolve, reject }); return; }
+		if (existing) {
+			if (!existing.observers) {
+				const observers = [{ resolve: existing.resolve, reject: existing.reject }];
+				existing.observers = observers;
+				existing.resolve = () => { for (const observer of observers) observer.resolve(); };
+				existing.reject = (reason) => { for (const observer of observers) observer.reject(reason); };
+			}
+			existing.observers.push({ resolve, reject });
+			return;
+		}
 		const observers = [{ resolve, reject }];
 		queue.push({ steer, observers,
 			resolve: () => { for (const observer of observers) observer.resolve(); },
@@ -583,9 +592,25 @@ async function pump(chatId: string): Promise<void> {
 			attempt = 0;
 
 			if (status === 200) {
+				const persisted = stores.chatStore.getChat(chatId)?.messages ?? [];
+				const missing: QueuedSteer[] = [];
 				for (const entry of fire) {
-					finalizeSteer(entry.steer);
-					entry.resolve();
+					if (steerDelivered(persisted, entry.steer.id)) {
+						finalizeSteer(entry.steer);
+						entry.resolve();
+					} else missing.push(entry);
+				}
+				if (missing.length > 0 && !automaticFollowUpAllowed(chatId)) {
+					const back = s.queues.get(chatId) ?? [];
+					back.push(...missing);
+					s.queues.set(chatId, back);
+					parked = true;
+					return;
+				}
+				for (const entry of missing) {
+					const err = new Error("Teacher notification did not persist");
+					failSteer(entry.steer, err);
+					entry.reject(err);
 				}
 			} else {
 				const err = new Error(`wake turn failed with status ${status}`);

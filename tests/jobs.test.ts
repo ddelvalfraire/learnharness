@@ -1,3 +1,4 @@
+import { durableWake } from "./helpers/durable-wake.ts";
 /**
  * Job infrastructure tests — deterministic, zero network:
  *
@@ -147,7 +148,7 @@ afterEach(() => {
 	// Late wakes from a prior test must be inert: a no-op respawn can't
 	// increment anyone's counter, a no-op runner can't spawn real work.
 	setJobRespawn(() => {});
-	setTurnRunner(async () => 200);
+	setTurnRunner(durableWake(chatStore, async () => 200));
 });
 
 after(() => {
@@ -841,10 +842,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 		chatStore.saveMessages(chat.id, nativeToolMessages("teach me calc", "probe_done", "call-pd", { ok: true }));
 		const handoff = buildProbeHandoffSteer(chat.id);
 		let seen: { chatId: string; steers: SteerMessage[] } | undefined;
-		setTurnRunner(async (cid, input) => {
+		setTurnRunner(durableWake(chatStore, async (cid, input) => {
 			seen = { chatId: cid, steers: (input as SteerInput).steers as SteerMessage[] };
 			return 200;
-		});
+		}));
 
 		await deliverJobResult(handoff);
 		await waitFor(() => seen !== undefined, 8000, "handoff wake fired");
@@ -861,10 +862,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 		// The transcript already carries the steer (a previous wake completed).
 		chatStore.saveMessages(chat.id, [handoff as never]);
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 
 		await deliverJobResult(handoff);
 		assert.equal(fired, 0, "already delivered — the pump resolves without firing a wake");
@@ -873,10 +874,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 	it("delivers: fires the turn runner with the record + steer, then flips the job done", async () => {
 		const { chatId, jobId, steer } = setup();
 		let seen: { chatId: string; steers: SteerMessage[] } | undefined;
-		setTurnRunner(async (cid, input) => {
+		setTurnRunner(durableWake(chatStore, async (cid, input) => {
 			seen = { chatId: cid, steers: (input as SteerInput).steers as SteerMessage[] };
 			return 200;
-		});
+		}));
 
 		await deliverJobResult(steer);
 		await waitFor(() => jobStore.getJob(jobId)!.status !== "running", 8000, "job flip after delivery");
@@ -892,10 +893,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 	it("waits while a question part is pending, and fires once it clears", async () => {
 		const { chatId, jobId, steer } = setup();
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 
 		// A dangling question call blocks the wake (the model would reject an
 		// unanswered tool call — fork 1: the record ends at the call).
@@ -947,10 +948,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 	it("the dismissal pause holds deliveries — no wake until the user's next turn settles (A2)", async () => {
 		const { chatId, jobId, steer } = setup();
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 
 		// The record ends in a DISMISSAL (owner design 2026-10-03): the
 		// question was skipped via the silent route — no dangling call (the
@@ -1002,10 +1003,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 	it("retries with backoff on a 409 (a client turn raced in) and delivers on the retry", async () => {
 		const { jobId, steer } = setup();
 		let calls = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			calls++;
 			return calls === 1 ? 409 : 200;
-		});
+		}));
 
 		await deliverJobResult(steer);
 		assert.ok(calls >= 2, "409 was retried");
@@ -1020,10 +1021,10 @@ describe("wake pipeline (src/server/jobs.ts)", () => {
 		chatStore.saveMessages(chatId, [...record.messages, steer] as never);
 
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 
 		await deliverJobResult(steer);
 		assert.equal(fired, 0, "no duplicate wake for an already-delivered steer");
@@ -1043,10 +1044,10 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		const { chatId, jobId, steer } = setup();
 		const { handed, agent } = fakeAgent();
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 
 		// A live turn is streaming (turn registry + live agent registered).
 		assert.ok(beginTurn(chatId));
@@ -1071,10 +1072,10 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		const { chatId, jobId, steer } = setup();
 		const { handed, agent } = fakeAgent();
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 
 		assert.ok(beginTurn(chatId));
 		registerLiveAgent(chatId, agent as never);
@@ -1100,10 +1101,10 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		const handoff = buildProbeHandoffSteer(chat.id);
 		const { handed, agent } = fakeAgent();
 		const fired: SteerMessage[][] = [];
-		setTurnRunner(async (_cid, input) => {
+		setTurnRunner(durableWake(chatStore, async (_cid, input) => {
 			fired.push((input as SteerInput).steers as SteerMessage[]);
 			return 200;
-		});
+		}));
 
 		assert.ok(beginTurn(chat.id));
 		registerLiveAgent(chat.id, agent as never);
@@ -1126,10 +1127,10 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		const { chatId, jobId, steer } = setup();
 		const { handed, agent } = fakeAgent();
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 
 		// A dangling question has the pump parked in waitForIdle: the
 		// marker is pending but no live run exists to take it.
@@ -1195,10 +1196,10 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 		const steer2 = buildSubagentSteer(job2, result);
 
 		const fired: SteerMessage[][] = [];
-		setTurnRunner(async (_cid, input) => {
+		setTurnRunner(durableWake(chatStore, async (_cid, input) => {
 			fired.push((input as SteerInput).steers as SteerMessage[]);
 			return 200;
-		});
+		}));
 
 		await Promise.all([deliverJobResult(steer), deliverJobResult(steer2)]);
 		assert.equal(fired.length, 1, "one wake for the whole queue");
@@ -1211,7 +1212,7 @@ describe("Wave C: live steering handoff + settlement reconciliation", () => {
 
 	it("records notification failure without losing a completed artifact", async () => {
 		const { jobId, steer } = setup();
-		setTurnRunner(async () => 500);
+		setTurnRunner(durableWake(chatStore, async () => 500));
 
 		await deliverJobResult(steer).then(
 			() => assert.fail("expected delivery to reject"),
@@ -1490,10 +1491,10 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 	it("kills the running loop: error \"Aborted by learner\" immediately, loop unwinds silently, teacher gets the abort steer", async () => {
 		const { jobId } = newChatWithResearchJob("abort running job", "call-abort1");
 		const fired: SteerMessage[] = [];
-		setTurnRunner(async (_cid, input) => {
+		setTurnRunner(durableWake(chatStore, async (_cid, input) => {
 			fired.push(...((input as SteerInput).steers as SteerMessage[]));
 			return 200;
-		});
+		}));
 		researchModelOverride.current = hangingModel();
 		const runner = createJobRunner({
 			chatStore,
@@ -1532,7 +1533,7 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 
 	it("the usage folded so far survives the kill (money channel outlives the abort)", async () => {
 		const { jobId } = newChatWithResearchJob("abort keeps usage", "call-abort2");
-		setTurnRunner(async () => 200);
+		setTurnRunner(durableWake(chatStore, async () => 200));
 		researchModelOverride.current = oneStepThenHangModel();
 		const runner = createJobRunner({ chatStore, jobStore, deliver: async () => {}, searchProvider: () => stubSearch() });
 		try {
@@ -1568,10 +1569,10 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 		// Block the pump's idle gates so the result steer sits QUEUED, not in flight.
 		assert.ok(beginTurn(chat.id));
 		const fired: SteerMessage[] = [];
-		setTurnRunner(async (_cid, input) => {
+		setTurnRunner(durableWake(chatStore, async (_cid, input) => {
 			fired.push(...((input as SteerInput).steers as SteerMessage[]));
 			return 200;
-		});
+		}));
 		void deliverJobResult(buildSubagentSteer(job, result)).catch(() => {
 			/* dropped by the abort below */
 		});
@@ -1673,10 +1674,10 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 	it("an orphan WITH a stored result is re-delivered: the wake fires and the job flips done", async () => {
 		const { jobId } = orphanJob({ brief: "Done: it works.", sources: [] });
 		let fired = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			fired++;
 			return 200;
-		});
+		}));
 		resetSweepThrottle();
 		recoverStaleJobs();
 		await waitFor(() => fired > 0, 8000, "recovery wake fired");

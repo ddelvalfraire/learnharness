@@ -18,6 +18,7 @@ process.env.LH_AUTH_FILE = path.join(dataDir, "auth.json");
 const { chatStore } = await import("../src/store/chats.ts");
 const { jobStore } = await import("../src/store/jobs.ts");
 const { inputAppends, parseChatInput } = await import("../src/core/input-events.ts");
+const { buildSubagentSteer } = await import("../src/core/contracts/jobs.ts");
 const chat = chatStore.createChat("Artifact browser regression");
 const base = {
 	role: "assistant", api: "openai-completions", provider: "openrouter", model: "fixture", timestamp: 1, stopReason: "toolUse",
@@ -122,8 +123,19 @@ try {
 	await page.reload({ waitUntil: "networkidle0" });
 	await page.waitForSelector('[data-testid="demo-iframe"]');
 	assert.equal(await page.$eval('[aria-label="Invert demo brightness"]', (element) => element.getAttribute("aria-checked")), "true");
+	// A previously migrated legacy card first renders its embedded preference,
+	// then receives the current artifact-owned preference from the jobs request.
+	const saved = jobStore.getJob(job.id);
+	const legacyMarker = buildSubagentSteer({ id: job.id, kind: job.kind, toolCallId: job.toolCallId }, saved.result);
+	legacyMarker.details.ui = { inverted: false };
+	const record = chatStore.getChat(chat.id);
+	chatStore.saveMessages(chat.id, record.messages.map((message) => message.id === legacyMarker.id ? legacyMarker : message));
+	await page.reload({ waitUntil: "networkidle0" });
+	await page.waitForSelector('[data-testid="demo-iframe"]');
+	await page.waitForFunction(() => document.querySelector('[aria-label="Invert demo brightness"]')?.getAttribute("aria-checked") === "true");
+	assert.equal(await page.$$eval('[data-testid="demo-iframe"]', (elements) => elements.length), 1);
 	assert.deepEqual(errors, []);
-	console.log("PASS: demo appears before answering; draft survives; one iframe retains interaction through delivery; brightness survives reload; no unsolicited teacher request.");
+	console.log("PASS: demo appears before answering; draft survives; one iframe retains interaction through delivery; new and legacy brightness survive reload; no unsolicited teacher request.");
 } finally {
 	await browser?.close();
 	if (server.exitCode === null) { const exited = once(server, "exit"); server.kill("SIGTERM"); await exited; }

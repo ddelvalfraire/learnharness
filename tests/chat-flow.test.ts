@@ -1,3 +1,4 @@
+import { durableWake } from "./helpers/durable-wake.ts";
 /**
  * Scripted integration test — the full teacher loop with zero tokens:
  *
@@ -425,11 +426,11 @@ describe("teacher chat flow (scripted model)", () => {
 		// is chat-handler's module-level wiring; this file's import already set
 		// it — we override for the scripted engine, as jobs.test does).
 		const wake = scriptedTeacher(() => [() => fauxAssistantMessage([fauxText("Good research — building on it.")])]);
-		setTurnRunner(async (chatId, input) => {
+		setTurnRunner(durableWake(chatStore, async (chatId, input) => {
 			const res = await handleChatInput(chatId, input, agentFactory(wake.engine));
 			await res.arrayBuffer().catch(() => undefined);
 			return res.status;
-		});
+		}));
 
 		// A REAL job record — chatIdOf resolves the chat through the job
 		// store (details.jobId indexes it); a synthetic id with no record
@@ -504,10 +505,10 @@ describe("teacher chat flow (scripted model)", () => {
 		// A wake here would be a BUG (delivery must ride the live run) — the
 		// counter keeps an erroneous wake hermetic and assertable.
 		let wakes = 0;
-		setTurnRunner(async () => {
+		setTurnRunner(durableWake(chatStore, async () => {
 			wakes++;
 			return 200;
-		});
+		}));
 
 		// The turn floats mid-run: step 1 is gated, the run is live.
 		const res = handleChatRequest(post(chat.id, { type: "text", text: "teach" }), agentFactory(engine));

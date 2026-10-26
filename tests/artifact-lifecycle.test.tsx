@@ -1,3 +1,4 @@
+import { durableWake } from "./helpers/durable-wake.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -154,7 +155,7 @@ test("a dispatched wake cannot report cancellation before its turn claim starts"
 	let release = () => {};
 	const started = new Promise<void>((resolve) => { start = resolve; });
 	const gate = new Promise<void>((resolve) => { release = resolve; });
-	setTurnRunner(async () => { start(); await gate; return 200; });
+	setTurnRunner(durableWake(chatStore, async () => { start(); await gate; return 200; }));
 	const delivery = deliverJobResult(completed.marker);
 	await started;
 	try {
@@ -178,12 +179,24 @@ test("hot reload upgrades a wake registry created before the in-flight map exist
 	}
 });
 
+test("hot reload preserves observers on a notification queued by the previous module", async () => {
+	const { job } = fixture();
+	const completed = completion(job.id);
+	const first = deliverJobResult(completed.marker);
+	const pipeline = Reflect.get(globalThis, "__lhWakePipeline");
+	const entry = Reflect.get(pipeline, "queues").get(job.chatId)[0];
+	Reflect.deleteProperty(entry, "observers");
+	const duplicate = deliverJobResult(completed.marker);
+	assert.equal(abortJob(job.id).ok, true);
+	await Promise.all([first, duplicate]);
+});
+
 for (const stranded of [false, true]) {
 	test(`a completed demo remains visible while notification waits ${stranded ? "after a question stopper" : "behind a question"}`, async () => {
 		const { chat, job } = fixture();
 		const completed = completion(job.id);
 		let wakes = 0;
-		setTurnRunner(async () => { wakes++; return 200; });
+		setTurnRunner(durableWake(chatStore, async () => { wakes++; return 200; }));
 		if (stranded) {
 			assert.ok(beginTurn(chat.id));
 			registerLiveAgent(chat.id, new Agent({ streamFn: () => { throw new Error("This test must not generate a teacher response"); } }));
@@ -254,7 +267,7 @@ test("duplicate delivery during a wake and after transcript compaction does not 
 	const started = new Promise<void>((resolve) => { start = resolve; });
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	let wakes = 0;
-	setTurnRunner(async () => { wakes++; start(); await gate; return 200; });
+	setTurnRunner(durableWake(chatStore, async () => { wakes++; start(); await gate; return 200; }));
 	const first = deliverJobResult(completed.marker);
 	await started;
 	const duplicate = deliverJobResult(completed.marker);
@@ -264,6 +277,16 @@ test("duplicate delivery during a wake and after transcript compaction does not 
 	assert.equal(jobStore.getJob(job.id)?.delivery?.state, "delivered");
 	await deliverJobResult(completed.marker);
 	assert.equal(wakes, 1, "durable acknowledgement survives a transcript without the old marker");
+});
+
+test("a successful response without a persisted marker cannot acknowledge delivery", async () => {
+	const { chat, job } = fixture();
+	const completed = completion(job.id);
+	chatStore.saveMessages(chat.id, [assistant]);
+	setTurnRunner(async () => 200);
+	await assert.rejects(deliverJobResult(completed.marker), /persist/);
+	assert.equal(jobStore.getJob(job.id)?.delivery?.state, "failed");
+	assert.deepEqual(jobStore.getJob(job.id)?.result, result);
 });
 
 test("legacy embedded artifacts retain their payload and saved brightness", () => {
