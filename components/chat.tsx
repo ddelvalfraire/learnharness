@@ -236,7 +236,7 @@ export function Chat({
 	// (core/view.ts projectView); sends are ONE explicit input event each
 	// ({chatId, input} — the stash indirection died with the SDK), and the
 	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
-	const { messages, nativeMessages, contextTokens, send, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
+	const { messages, nativeMessages, contextTokens, send, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, syncRecord, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
 		useChatSession({ chatId, initialMessages, initiallyInFlight });
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
@@ -601,11 +601,7 @@ export function Chat({
 		// record refetch (the honest truth minus the refused send).
 		let cancelled = false;
 		void (async () => {
-			const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`);
-			if (!cancelled && res.ok) {
-				const record = (await res.json().catch(() => null)) as { messages?: LhMessage[] } | null;
-				if (Array.isArray(record?.messages)) setMessages(record.messages);
-			}
+			await syncRecord();
 			if (cancelled) return;
 			if (draftRef.current !== null) {
 				applyText(draftRef.current);
@@ -617,7 +613,7 @@ export function Chat({
 		return () => {
 			cancelled = true;
 		};
-		// (setMessages/clearError are stable per useChat instance — the
+		// (syncRecord/clearError are stable per useChat instance — the
 		//  dep pair [error, chatId] is what the flow actually keys on.)
 	}, [error, chatId]);
 	// Voice dictation (STT wave, 2026-09-17): finals append at the end of
@@ -715,22 +711,11 @@ export function Chat({
 	useEnterSubmits(sendNext);
 
 	const syncFromServer = useCallback(async () => {
-		const res = await fetch(`/api/chats/${chatId}`);
-		if (!res.ok) return;
-		const record = (await res.json()) as { messages?: LhMessage[]; turns?: TurnUsage[]; pricing?: SessionPricing };
+		const record = await syncRecord();
+		if (!record) return;
 		if (Array.isArray(record.turns)) setTurns(record.turns);
 		setPricing(record.pricing);
-		if (!Array.isArray(record.messages)) return;
-		setMessages(record.messages);
-		// The continuation seam (contracts.ts protocol §4): a job result
-		// landing in the record leaves the agent owing a continuation — the
-		// record ENDS on un-consumed results, the dock owns no question, and
-		// nothing runs. The native fold (needsContinuation) is the old SDK
-		// lastAssistantMessageIsCompleteWithToolCalls check.
-		if (status === "ready" && needsContinuation(record.messages)) {
-			void send({ type: "continue" });
-		}
-	}, [chatId, setMessages, send, status]);
+	}, [syncRecord]);
 
 	// The settled terminal's other half (stream-reattach wave): the
 	// transport resolved turn-settled — no turn running, the record is

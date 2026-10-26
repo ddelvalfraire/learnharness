@@ -25,14 +25,21 @@ import {
 	newUserMessage,
 	projectView,
 	type ChatInput,
+	type ChatRecord,
 	type LhMarkerMessage,
 	type LhMessage,
 	type LhViewMessage,
 	type LiveExecution,
 	type QuestionAnswerData,
+	type SessionPricing,
 } from "../src/core";
 
 export type SessionStatus = "ready" | "submitted" | "streaming" | "error";
+
+type SessionRecord = Pick<ChatRecord, "messages" | "turns"> & {
+	pricing?: SessionPricing;
+	turnInFlight?: boolean;
+};
 
 /** How often to poll turnInFlight while a racing turn runs (409 retry). */
 export const TURN_POLL_MS = 500;
@@ -234,6 +241,8 @@ export class SessionModel {
 	// The single live consume (POST response or reattach stream): a newer
 	// consume cancels the older — one reader at a time.
 	private consumeAbort: AbortController | null = null;
+	private revision = 0;
+	private recordRequest = 0;
 	/** Synchronous ready check for the gate (send/read mount logic). */
 	readyRef = true;
 
@@ -287,12 +296,16 @@ export class SessionModel {
 
 	/** Mutate model state + notify (the hook re-renders). */
 	private mutate(fn: () => void): void {
+		this.revision++;
 		fn();
 		this.onChange?.();
 	}
 
 	private setStatus(status: SessionStatus): void {
-		if (status === "submitted") this.liveFailureId = null;
+		if (status === "submitted" || status === "error") this.revision++;
+		if (status === "submitted") {
+			this.liveFailureId = null;
+		}
 		this.statusValue = status;
 		this.readyRef = status === "ready";
 		this.onChange?.();
@@ -732,12 +745,34 @@ export class SessionModel {
 	/** Local detach: cancel the consume, keep the partial tail. The page's
 	 *  settle watch adopts the record when the server turn finishes. */
 	stop(): void {
+		this.revision++;
 		this.consumeAbort?.abort();
 		this.consumeAbort = null;
 		this.streamingIds = new Set();
 		this.streamingMessageId = null;
 		this.executions = new Map();
 		this.setStatus("ready");
+	}
+
+	/** Refresh only a view that has not advanced since this request began.
+	 * A full swap must never erase an optimistic answer or a live stream. */
+	async syncRecord(): Promise<SessionRecord | null> {
+		const revision = this.revision;
+		const request = ++this.recordRequest;
+		const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`);
+		if (!res.ok) return null;
+		const record = (await res.json()) as SessionRecord;
+		if (!Array.isArray(record.messages)) return null;
+		if (request !== this.recordRequest || revision !== this.revision) return null;
+		if (this.statusValue === "submitted" || this.statusValue === "streaming" || record.turnInFlight === true) return null;
+		this.setMessages(record.messages);
+		// The rejected input's optimistic copy is gone. Confirmed server
+		// idleness lets the learner submit again; retain the error until then.
+		if (this.statusValue === "error" && record.turnInFlight === false) this.setStatus("ready");
+		if (this.statusValue === "ready" && needsContinuation(record.messages)) {
+			void this.send({ type: "continue" });
+		}
+		return record;
 	}
 
 	/** Full snapshot swap (the idle settle sync — server canon). */
