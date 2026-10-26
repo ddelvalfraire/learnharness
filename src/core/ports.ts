@@ -18,6 +18,7 @@ import type {
 	GraphNode,
 	JobKind,
 	JobRecord,
+	JobResult,
 	ExtractionRunUsage,
 	PlanTree,
 	Position,
@@ -147,6 +148,8 @@ export interface JobStore {
 	getJob(id: string): JobRecord | null;
 	/** Merge a patch into the record; null if unknown id. */
 	updateJob(id: string, patch: JobPatch): JobRecord | null;
+	/** Atomically save the finished artifact and its pending teacher notification. */
+	completeJob(id: string, result: JobResult): JobRecord | null;
 	/** All jobs for a chat, newest activity first. */
 	listJobs(chatId: string): JobRecord[];
 	/** The job fulfilling a given tool part, if any (spawn-hook dedup). */

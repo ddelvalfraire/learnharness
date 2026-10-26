@@ -78,9 +78,9 @@ function testRunner() {
 			steers.push(steer);
 			const jobId = (steer.details as { jobId: string }).jobId;
 			const job = jobStore.getJob(jobId);
-			if (job && job.status === "running") {
+			if (job && (job.status === "running" || job.delivery?.state === "pending")) {
 				const failed = job.result ? isSubagentFailure(job.kind, job.result as never) : true;
-				jobStore.updateJob(jobId, { status: failed ? "error" : "done", activity: failed ? "failed" : "delivered" });
+				jobStore.updateJob(jobId, { status: failed ? "error" : "done", activity: failed ? "failed" : "delivered", delivery: { state: "delivered" } });
 			}
 		},
 	});
@@ -856,9 +856,10 @@ describe("demo/visual job runners", () => {
 
 		// The steer carries the artifact for the renderer.
 		assert.equal(steers.length, 1, "exactly one steer");
-		const data = steers[0]!.details as { kind: string; result: unknown };
+		const data = steers[0]!.details as { kind: string; artifactId: string; result?: unknown };
 		assert.equal(data.kind, "demo");
-		assert.deepEqual(data.result, result);
+		assert.equal(data.artifactId, job.id);
+		assert.equal(data.result, undefined, "the artifact has one durable owner");
 
 		// The tool part keeps the DISPATCH ACK forever — the result never
 		// rewrites it (the teacher gets the result once, via the steer).
@@ -912,7 +913,7 @@ describe("demo/visual job runners", () => {
 		assert.match(errored.error ?? "", /never wrote an SVG/);
 
 		assert.ok(steers[0], "failure still delivers a steer — the teacher learns the outcome");
-		const result = (steers[0]!.details as { result: unknown }).result as { svg: string; notes?: string };
+		const result = errored.result as { svg: string; notes?: string };
 		assert.equal(result.svg, "");
 		assert.match(result.notes ?? "", /^FAILED:/);
 	});

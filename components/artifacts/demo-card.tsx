@@ -6,7 +6,7 @@ import { Toggle } from "@/components/settings/controls";
 import { InvertDiscIcon } from "@/components/artifacts/invert-disc";
 import { ChatActionsContext } from "@/components/chat";
 import { downloadFile, slugFilename } from "@/components/artifacts/download";
-import { DispatchCard } from "@/components/artifacts/dispatch-card";
+import { JobArtifactCard } from "@/components/artifacts/job-artifact-card";
 import type { ArtifactPartProps, DemoResult } from "@/src/core";
 
 /**
@@ -81,11 +81,11 @@ export function reduceDemoBridgeState(state: DemoBridgeState, data: unknown): De
 // ─── the demo card ──────────────────────────────────────────────────────────
 
 /** The demo tool-call box: the part's output is the dispatch ack — the box
- * is the DispatchCard (live status via the chat view's jobs feed). The demo
- * itself renders from the steer message via DemoOutputCard. */
+ * owns one stable artifact slot. Readiness comes from the job record,
+ * independently of the teacher notification. */
 export function DemoCard({ part }: ArtifactPartProps) {
 	if (part.state !== "output-available") return null;
-	return <DispatchCard toolCallId={part.toolCallId} kind="demo" />;
+	return <JobArtifactCard toolCallId={part.toolCallId} kind="demo" />;
 }
 
 /** The demo artifact — exported: the steer card renders the delivered
@@ -94,10 +94,12 @@ export function DemoCard({ part }: ArtifactPartProps) {
 export function DemoOutputCard({
 	output,
 	messageId,
+	artifactId,
 	initialInverted = false,
 }: {
 	output: unknown;
 	messageId?: string;
+	artifactId?: string;
 	initialInverted?: boolean;
 }) {
 	const result = output as DemoResult | undefined;
@@ -121,7 +123,7 @@ export function DemoOutputCard({
 		);
 	}
 	return (
-		<DemoFrame title={result.title} html={result.html} messageId={messageId} initialInverted={initialInverted} />
+		<DemoFrame title={result.title} html={result.html} messageId={messageId} artifactId={artifactId} initialInverted={initialInverted} />
 	);
 }
 
@@ -129,11 +131,13 @@ function DemoFrame({
 	title,
 	html,
 	messageId,
+	artifactId,
 	initialInverted = false,
 }: {
 	title: string;
 	html: string;
 	messageId?: string;
+	artifactId?: string;
 	initialInverted?: boolean;
 }) {
 	const actions = useContext(ChatActionsContext);
@@ -149,11 +153,11 @@ function DemoFrame({
 	const [inverted, setInverted] = useState(initialInverted);
 	const toggleInverted = (next: boolean) => {
 		setInverted(next);
-		if (!actions?.chatId || !messageId) return;
+		if (!actions?.chatId || (!artifactId && !messageId)) return;
 		void fetch(`/api/chats/${actions.chatId}/artifact-ui`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ input: { messageId, inverted: next } }),
+			body: JSON.stringify({ input: { ...(artifactId ? { artifactId } : { messageId }), inverted: next } }),
 		}).catch(() => {});
 	};
 	const srcDoc = useMemo(() => buildDemoSrcDoc(html), [html]);

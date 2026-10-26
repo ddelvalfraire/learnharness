@@ -12,8 +12,20 @@ import { newHandoffMessage } from "../native-messages.ts";
 
 // ─── Async sub-agent jobs (vision §2.5; plan.md Wave 0 protocol) ────────────
 
-export type JobKind = "research" | "demo" | "visual" | "pdf";
+export const JOB_KINDS = ["research", "demo", "visual", "pdf"] as const;
+export type JobKind = (typeof JOB_KINDS)[number];
 export type JobStatus = "running" | "done" | "error";
+
+export type JobDelivery =
+	| { state: "none" }
+	| { state: "pending"; message: LhMarkerMessage }
+	| { state: "delivered" }
+	| { state: "cancelled" }
+	| { state: "failed"; error: string };
+
+export interface ArtifactUi {
+	inverted?: boolean;
+}
 
 export interface JobRecord {
 	id: string;
@@ -28,6 +40,9 @@ export interface JobRecord {
 	updatedAt: string;
 	/** The sub-agent's result (steer-artifact payload). */
 	result?: unknown;
+	/** Build status and notification delivery are independent. Absent on legacy records. */
+	delivery?: JobDelivery;
+	ui?: ArtifactUi;
 	error?: string;
 	/** Money channel (observability, 2026-09): accumulated token usage of
 	 * the sub-agent's run, written by the runner as steps complete. Cost is
@@ -131,64 +146,18 @@ export function accumulateJobUsage(
 }
 
 /**
- * THE ASYNC PROTOCOL — "ack now, steer later" (the pi sub-agents model,
- * vision §2.5):
+ * Job tools acknowledge dispatch immediately. The teacher keeps teaching while
+ * an independent runner builds and verifies the result. Completion atomically
+ * saves the result and a pending teacher notification in the job record.
  *
- *  1. Job tools (research / demo / visual / pdf) are SERVER-EXECUTED. The model
- *     calls one MID-TURN; execute creates the job record, fires the
- *     background runner, and resolves IMMEDIATELY with an acknowledgement
- *     ("dispatched — continue your turn"). The teacher's turn does NOT end
- *     at the call: it keeps teaching, may dispatch other independent jobs
- *     (full parallelism), and ends whenever it ends. The tool part's output
- *     is the ack, forever.
+ * Artifact cards read the result directly and retain their identity through
+ * delivery. New transcript markers reference the artifact by job id; legacy
+ * embedded payloads remain readable. Preferences belong to the artifact.
  *
- *  2. The background runner (src/agent/subagents/runner.ts) runs the kind's
- *     sub-agent loop — isolated context, modelFor(role), the
- *     verify-never-one-shot doctrine (headless-tested demos, looked-at SVGs,
- *     sourced briefs) — tracking a live activity line in the job record.
- *     ONE central client poll of GET /api/jobs?chatId=… (in Chat) drives every
- *     job surface: the transcript dispatch cards (live activity by
- *     toolCallId, quiet one-liner after delivery), the sub-agents sidebar
- *     panel, and the single re-sync when a job settles.
- *
- *  3. On completion the runner builds a STEER MESSAGE (buildSubagentSteer)
- *     and hands it to the wake pipeline (src/server/jobs.ts): a user-role
- *     result-carrying native marker — the content is what the MODEL needs
- *     (the research brief, the builder's notes), plus a data-subagent-artifact
- *     part with what the UI renders (the full result: brief + sources /
- *     SVG / demo HTML). Provider conversion drops data parts, so artifact
- *     payloads never enter the teacher's context. metadata.subagentResult
- *     identifies the job; the UI renders these as sub-agent result cards,
- *     NEVER as learner interjections.
- *
- *  4. The wake pipeline delivers the steer by firing a SERVER-SIDE teacher
- *     turn through the same turn composition as a client request
- *     (handleChatRequest) — write-ahead persist, turn liveness, extraction
- *     trigger: one code path. A per-chat serialized queue: a steer waits
- *     while a turn is in flight OR a question tool part is pending (an
- *     unanswered client-side tool call breaks provider conversion — the
- *     steer fires right after the learner's continuation), then fires; a 409
- *     (a client turn raced in) retries. Delivery is idempotent per jobId, so
- *     a crashed wake can be re-entered by the stale-job recovery sweep. The
- *     job's status flips to done/error only AFTER the wake turn completes —
- *     a polling client that sees the flip re-syncs once and gets the
- *     finished record.
- *
- *     CONTINUATION COALESCING: the idle window above can starve — a
- *     quiz-chaining teacher ends every turn with a new pending check, so
- *     the gates never stay open long enough for a wake to fire. The fix:
- *     when a client turn wins the turn registry, the handler CLAIMS every
- *     queued, undelivered steer (jobs.ts claimSteers) and appends it after
- *     the learner's answer in that very turn — conversion-safe, because the
- *     answered quiz carries its output. Every answer flushes pending
- *     steers immediately; the wake pump remains for turns that end with no
- *     pending question. The pump re-checks steerDelivered right before
- *     firing, so a claim racing the pump converges to exactly one delivery.
- *
- *  5. No pending job parts ever exist, so the composer never gates on jobs
- *     (the learner can interject mid-job; the steer queues behind their
- *     turn) and job tool outputs never trigger the client-side
- *     sendAutomatically continuation — that mechanism stays quiz/ask-only.
+ * The delivery worker respects unanswered questions, live-turn boundaries,
+ * dismissals, and account consent. Durable turn settlement acknowledges the
+ * notification. Recovery retries pending notifications independently of build
+ * status; replay deduplicates by the deterministic notification id.
  */
 
 export interface ResearchToolInput {
@@ -279,23 +248,17 @@ export interface SubagentResultMeta {
 }
 
 /** The data-subagent-artifact part payload: what the UI renders. */
-export interface SubagentArtifactData {
-	kind: JobKind;
-	result: ResearchResult | DemoResult | VisualResult | PdfResult;
-	/** The learner's pinned UI state (invert switch) riding the record. */
-	ui?: { inverted?: boolean };
-}
+export type JobResult = ResearchResult | DemoResult | VisualResult | PdfResult;
+
+type ArtifactPayload =
+	| { artifactId: string; result?: never; ui?: never }
+	| { artifactId?: never; result: JobResult; ui?: ArtifactUi };
+
+export type SubagentArtifactData = { kind: JobKind } & ArtifactPayload;
 
 /** A result steer's marker details: the UI's meta + artifact in one
  *  payload (the projection splits it into metadata + data part). */
-export interface SteerDetails extends SubagentResultMeta {
-	result: ResearchResult | DemoResult | VisualResult | PdfResult;
-	/** LEARNER UI state pinned onto the artifact (owner, 2026-10-07): the
-	 *  invert switch's position, persisted so navigating away and back (or
-	 *  restarting) keeps it. A VIEW preference — never enters the teacher's
-	 *  context, never exports (the markdown engine reads `result` only). */
-	ui?: { inverted?: boolean };
-}
+export type SteerDetails = SubagentResultMeta & ArtifactPayload;
 
 /** Set a steer message's ui.inverted (pure): returns a NEW message array
  *  with the target's details updated — no-op (same array) when the message
@@ -370,7 +333,7 @@ function steerText(kind: JobKind, result: ResearchResult | DemoResult | VisualRe
  * idempotent.
  */
 export function buildSubagentSteer(
-	job: Pick<JobRecord, "id" | "kind" | "toolCallId">,
+	job: Pick<JobRecord, "id" | "kind" | "toolCallId" | "delivery">,
 	result: ResearchResult | DemoResult | VisualResult | PdfResult,
 ): SteerMessage {
 	return {
@@ -383,7 +346,7 @@ export function buildSubagentSteer(
 			jobId: job.id,
 			kind: job.kind,
 			toolCallId: job.toolCallId,
-			result,
+			...(job.delivery ? { artifactId: job.id } : { result }),
 		},
 		timestamp: Date.now(),
 	};

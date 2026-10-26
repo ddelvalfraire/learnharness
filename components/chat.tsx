@@ -29,7 +29,8 @@ import { dockStateKey } from "@/components/dock-state-key";
 import { QueuedSteersBody, type QueuedSteerLine } from "@/components/queued-steers";
 import { DictationBar, finishDictation, joinDictation, useDictation } from "@/components/dictation";
 import { useFieldCycle } from "@/components/field-cycle";
-import { JobsContext } from "@/components/jobs-context";
+import { ArtifactSlotsContext, JobsContext } from "@/components/jobs-context";
+import { artifactSlotsOf } from "@/src/core";
 import { StatsBar } from "@/components/stats-bar";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import {
@@ -242,6 +243,7 @@ export function Chat({
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
 	const scrollContextRef = useRef<StickToBottomContext | null>(null);
 	const sourceTextParts = useMemo(() => firstSourceTextParts(messages), [messages]);
+	const artifactSlots = useMemo(() => artifactSlotsOf(messages), [messages]);
 
 	// The reattach settled terminal → the sync-and-continue seam (below).
 	setReattachSettled(() => reattachSettledRef.current());
@@ -984,15 +986,18 @@ export function Chat({
 	// old chatId).
 	const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const fetchJobsRef = useRef<() => void>(() => {});
+	const jobsFetchSequence = useRef(0);
 	const fetchJobs = useCallback(async () => {
+		const sequence = ++jobsFetchSequence.current;
 		try {
 			const res = await fetch(`/api/jobs?chatId=${encodeURIComponent(chatId)}`);
 			if (!res.ok) return;
 			const data = (await res.json()) as { jobs?: JobRecord[]; turnInFlight?: boolean };
+			if (sequence !== jobsFetchSequence.current) return;
 			const list = data.jobs ?? [];
 			for (const j of list) {
 				const prev = jobStatusRef.current.get(j.id);
-				if (prev === "running" && j.status !== "running") {
+				if (prev !== undefined && prev !== (j.delivery?.state ?? j.status) && j.delivery?.state === "delivered") {
 					// A settle — the blob leaves the dock via the store's jobs-changed
 					// announce at this very write (S5); this handler owns the RECORD.
 					// The record is only guaranteed complete when no turn is in
@@ -1008,7 +1013,7 @@ export function Chat({
 						void syncFromServer();
 					}
 				}
-				jobStatusRef.current.set(j.id, j.status);
+				jobStatusRef.current.set(j.id, j.delivery?.state ?? j.status);
 			}
 			firstFetchRef.current = false;
 			if (
@@ -1187,6 +1192,7 @@ export function Chat({
 			}}
 		>
 		<JobsContext.Provider value={jobs}>
+		<ArtifactSlotsContext.Provider value={artifactSlots}>
 		{/* The session surface: the transcript column (header + scroller) and
 		    the plan-tree panel as full-height SIBLINGS — the panel spans top to
 		    bottom exactly like the left sidebar, and the header (name + phase
@@ -1689,6 +1695,7 @@ export function Chat({
 				</div>
 			</div>
 		</div>
+		</ArtifactSlotsContext.Provider>
 		</JobsContext.Provider>
 		</SessionMermaidContext.Provider>
 		{/* The BYOK setup flow (owner, 2026-09-22): one mount serves the

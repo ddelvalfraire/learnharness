@@ -5,6 +5,7 @@ import { titleFromPrompt } from "../core/contracts.ts";
 import { graphRevision } from "./graph.ts";
 import { stores } from "./stores.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
+import { jobHasWork } from "../core/job-lifecycle.ts";
 
 /**
  * Server-side chat entries for the transport layer (app/api/chats*,
@@ -78,7 +79,7 @@ export async function deleteChatSession(chatId: string, mode: ChatDeleteMode): P
 			jobIds: [],
 		};
 	}
-	const runningJobs = stores.jobStore.listJobs(chatId).filter((job) => job.status === "running");
+	const runningJobs = stores.jobStore.listJobs(chatId).filter(jobHasWork);
 	if (runningJobs.length > 0) {
 		return {
 			ok: false,

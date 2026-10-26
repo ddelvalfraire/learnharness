@@ -494,7 +494,7 @@ describe("teacher chat flow (scripted model)", () => {
 				// message_end already fired, so the job must be flipped
 				// done NOW (dock fix, owner 2026-09-26) — not at this
 				// turn's settle.
-				jobFlippedMidTurn = jobStore.getJob(jobIdMid)?.status;
+				jobFlippedMidTurn = jobStore.getJob(jobIdMid)?.delivery?.state;
 				await gate2;
 				return fauxAssistantMessage([fauxText("Folded the marker in.")]);
 			},
@@ -519,7 +519,7 @@ describe("teacher chat flow (scripted model)", () => {
 		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-mid" });
 		jobIdMid = job.id;
 		// The runner stores the result BEFORE delivery (finalizeJob reads it).
-		jobStore.updateJob(job.id, { result: { brief: "Mid-run brief.", sources: [] } });
+		jobStore.completeJob(job.id, { brief: "Mid-run brief.", sources: [] });
 		const steer = buildSubagentSteer(job, { brief: "Mid-run brief.", sources: [] });
 		const delivery = deliverJobResult(steer);
 		await new Promise((r) => setTimeout(r, 300)); // vehicle 1 hands off
@@ -531,7 +531,8 @@ describe("teacher chat flow (scripted model)", () => {
 		release2();
 		await drain(await res);
 		await delivery; // resolves at settleSteers (the run persisted the marker)
-		assert.equal(jobFlippedMidTurn, "done", "the job flipped at the marker's message_end — WHILE the turn still streamed");
+		assert.equal(jobFlippedMidTurn, "pending", "wire visibility does not acknowledge durable delivery");
+		assert.equal(jobStore.getJob(job.id)?.delivery?.state, "delivered", "settlement acknowledges the notification");
 
 		// Record shape: the marker sits BETWEEN completed turn units — after
 		// the toolResult it must never split, adjacent to it.

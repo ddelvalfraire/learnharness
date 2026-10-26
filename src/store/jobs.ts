@@ -15,6 +15,8 @@ import { emit } from "../core/events.ts";
 import type { JobStore } from "../core/ports.ts";
 import type { CreateJobInit, JobPatch } from "../core/ports.ts";
 import type { JobRecord } from "../core/contracts.ts";
+import { completedJob, jobResult, migrateJob } from "../core/job-lifecycle.ts";
+import { chatStore } from "./chats.ts";
 
 /** Background jobs (data/jobs). Not in config.ts PATHS (orchestrator-owned). */
 const JOBS_DIR = path.join(PATHS.data, "jobs");
@@ -22,6 +24,17 @@ const JOBS_DIR = path.join(PATHS.data, "jobs");
 function jobFile(id: string): string {
 	if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid job id: ${id}`);
 	return path.join(JOBS_DIR, `${id}.json`);
+}
+
+function writeJob(record: JobRecord): void {
+	const file = jobFile(record.id);
+	const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+	try {
+		fs.writeFileSync(temporary, JSON.stringify(record, null, "\t"), { encoding: "utf-8", mode: 0o600 });
+		fs.renameSync(temporary, file);
+	} finally {
+		fs.rmSync(temporary, { force: true });
+	}
 }
 
 /** Writes announce on the events channel AFTER the write lands (the
@@ -36,19 +49,21 @@ function createJob(init: CreateJobInit): JobRecord {
 		chatId: init.chatId,
 		toolCallId: init.toolCallId,
 		status: "running",
+		delivery: { state: "none" },
 		activity: init.activity ?? "starting",
 		createdAt: now,
 		updatedAt: now,
 	};
 	fs.mkdirSync(JOBS_DIR, { recursive: true });
-	fs.writeFileSync(jobFile(record.id), JSON.stringify(record, null, "\t"), "utf-8");
+	writeJob(record);
 	emit("jobs-changed", { chatId: init.chatId });
 	return record;
 }
 
 function getJob(id: string): JobRecord | null {
 	try {
-		return JSON.parse(fs.readFileSync(jobFile(id), "utf-8")) as JobRecord;
+		const record = JSON.parse(fs.readFileSync(jobFile(id), "utf-8")) as JobRecord;
+		return migrateJob(record, record.delivery ? [] : chatStore.getChat(record.chatId)?.messages ?? []);
 	} catch {
 		return null;
 	}
@@ -61,7 +76,7 @@ function updateJob(id: string, patch: JobPatch): JobRecord | null {
 	const record = getJob(id);
 	if (!record) return null;
 	const next: JobRecord = { ...record, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
-	fs.writeFileSync(jobFile(id), JSON.stringify(next, null, "\t"), "utf-8");
+	writeJob(next);
 	// EVERY write, not just status flips: progress-line updates must reach
 	// the dispatch cards (the view debounces the fetch bursts). A missing id
 	// wrote nothing and stays silent.
@@ -113,6 +128,13 @@ export const jobStore: JobStore = {
 	createJob,
 	getJob,
 	updateJob,
+	completeJob: (id, result) => {
+		const job = getJob(id);
+		if (!job || job.status !== "running") return job;
+		const parsed = jobResult({ kind: job.kind, result });
+		if (!parsed) throw new Error(`Invalid completed ${job.kind} artifact`);
+		return updateJob(id, completedJob(job, parsed));
+	},
 	listJobs,
 	findJobByToolCallId,
 	deleteJobsForChat,
