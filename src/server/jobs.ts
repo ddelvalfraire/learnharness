@@ -79,7 +79,10 @@ interface LhWakeGlobal {
 
 function state(): WakeState {
 	const g = globalThis as typeof globalThis & LhWakeGlobal;
-	return (g.__lhWakePipeline ??= { queues: new Map(), delivering: new Map(), liveAgents: new Map(), userSteers: new Map(), pumping: new Set(), lastSweepAt: 0, automaticDeferred: new WeakSet() });
+	const current = (g.__lhWakePipeline ??= { queues: new Map(), delivering: new Map(), liveAgents: new Map(), userSteers: new Map(), pumping: new Set(), lastSweepAt: 0, automaticDeferred: new WeakSet() });
+	// Next dev preserves global state across module versions.
+	current.delivering ??= new Map();
+	return current;
 }
 
 /** chat-handler wires this at module init: its adapter around handleChatRequest. */
@@ -349,6 +352,9 @@ export function abortJob(jobId: string): AbortOutcome {
 	if (!job) return { ok: false, reason: "not_found" };
 	if (!jobHasWork(job)) return { ok: false, reason: "not_running" };
 	if (job.status !== "running") {
+		if (state().delivering.get(job.chatId)?.some((entry) => jobIdOf(entry.steer) === job.id)) {
+			return { ok: false, reason: "not_running" };
+		}
 		const queue = state().queues.get(job.chatId) ?? [];
 		const entry = queue.find((queued) => jobIdOf(queued.steer) === job.id);
 		if (isTurnRunning(job.chatId) && (!entry || entry.handedTo?.state.messages.some((message) => "id" in message && message.id === entry.steer.id))) {
@@ -359,9 +365,14 @@ export function abortJob(jobId: string): AbortOutcome {
 		state().queues.set(job.chatId, queue.filter((entry) => jobIdOf(entry.steer) !== job.id));
 		if (entry?.handedTo) {
 			const agent = entry.handedTo;
+			const consumedIds = new Set(agent.state.messages.flatMap((message) => "id" in message ? [message.id] : []));
 			agent.clearSteeringQueue();
-			for (const queued of state().queues.get(job.chatId) ?? []) if (queued.handedTo === agent) queued.handedTo = undefined;
-			for (const queued of state().userSteers.get(job.chatId) ?? []) if (queued.handedTo === agent) queued.handedTo = undefined;
+			for (const queued of state().queues.get(job.chatId) ?? []) {
+				if (queued.handedTo === agent && !consumedIds.has(queued.steer.id)) queued.handedTo = undefined;
+			}
+			for (const queued of state().userSteers.get(job.chatId) ?? []) {
+				if (queued.handedTo === agent && !consumedIds.has(queued.message.id)) queued.handedTo = undefined;
+			}
 			handOffEligible(job.chatId, agent);
 		}
 		for (const queued of queue) if (jobIdOf(queued.steer) === job.id) queued.resolve();

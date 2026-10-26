@@ -114,6 +114,68 @@ test("cancelling an unconsumed notification preserves queued learner steering", 
 	endTurn(chat.id);
 });
 
+test("cancelling a later notification never requeues already consumed inputs", async () => {
+	const { chat, job } = fixture();
+	const completed = completion(job.id);
+	const other = jobStore.createJob({ kind: "demo", chatId: chat.id, toolCallId: "other-demo" });
+	const later = completion(other.id);
+	const agent = new Agent({ streamFn: () => { throw new Error("No generation expected"); } });
+	agent.steeringMode = "all";
+	assert.ok(beginTurn(chat.id));
+	registerLiveAgent(chat.id, agent);
+	const firstDelivery = deliverJobResult(completed.marker);
+	const learner = newUserSteer("Keep this instruction once", "consumed-learner-steer");
+	steerLiveChat(chat.id, learner);
+	const consumed = agent.peekQueuedMessages();
+	agent.clearSteeringQueue();
+	agent.state.messages = consumed;
+	const laterDelivery = deliverJobResult(later.marker);
+	try {
+		assert.equal(abortJob(other.id).ok, true);
+		await laterDelivery;
+		assert.deepEqual(agent.peekQueuedMessages(), [], "consumed automatic and learner inputs must not be injected again");
+	} finally {
+		chatStore.saveMessages(chat.id, [...chatStore.getChat(chat.id)!.messages, completed.marker, learner]);
+		unregisterLiveAgent(chat.id);
+		settleSteers(chat.id, [completed.marker]);
+		reconcileUserSteers(chat.id, [learner]);
+		endTurn(chat.id);
+		await firstDelivery;
+	}
+});
+
+test("a dispatched wake cannot report cancellation before its turn claim starts", async () => {
+	const { chat, job } = fixture();
+	const completed = completion(job.id);
+	chatStore.saveMessages(chat.id, [assistant]);
+	let start = () => {};
+	let release = () => {};
+	const started = new Promise<void>((resolve) => { start = resolve; });
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	setTurnRunner(async () => { start(); await gate; return 200; });
+	const delivery = deliverJobResult(completed.marker);
+	await started;
+	try {
+		assert.deepEqual(abortJob(job.id), { ok: false, reason: "not_running" });
+		assert.equal(jobHasWork(jobStore.getJob(job.id)!), true, "deletion stays blocked while the dispatched wake is active");
+	} finally { release(); await delivery; }
+});
+
+test("hot reload upgrades a wake registry created before the in-flight map existed", async () => {
+	const { chat, job } = fixture();
+	const completed = completion(job.id);
+	const pipeline = Reflect.get(globalThis, "__lhWakePipeline");
+	Reflect.deleteProperty(pipeline, "delivering");
+	try {
+		const delivery = deliverJobResult(completed.marker);
+		assert.equal(abortJob(job.id).ok, true);
+		await delivery;
+	} finally {
+		if (!Reflect.get(pipeline, "delivering")) Reflect.set(pipeline, "delivering", new Map());
+		chatStore.saveMessages(chat.id, []);
+	}
+});
+
 for (const stranded of [false, true]) {
 	test(`a completed demo remains visible while notification waits ${stranded ? "after a question stopper" : "behind a question"}`, async () => {
 		const { chat, job } = fixture();
