@@ -207,6 +207,13 @@ function fakeJobStore(): JobStore {
 			if (!job) return null;
 			return Object.assign(job, patch);
 		},
+		completeJob(id, result) {
+			const job = jobs.get(id);
+			if (!job) return null;
+			job.result = result;
+			job.status = "done";
+			return job;
+		},
 		listJobs: () => [...jobs.values()],
 		findJobByToolCallId: () => null,
 		deleteJobsForChat: () => 0, // the drop tests never delete

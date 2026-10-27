@@ -16,3 +16,6 @@ import type { JobRecord } from "@/src/core";
  * to the composition root and the cards became pure renderers of this data.
  */
 export const JobsContext = createContext<JobRecord[]>([]);
+
+/** Tool-call locations that own their artifact for the lifetime of this chat view. */
+export const ArtifactSlotsContext = createContext<ReadonlySet<string> | null>(null);

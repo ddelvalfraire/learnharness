@@ -1,6 +1,9 @@
 "use client";
 
 import { CheckIcon, CircleX } from "lucide-react";
+import { useContext } from "react";
+import { ArtifactSlotsContext, JobsContext } from "@/components/jobs-context";
+import { jobResult, type JobKind, type JobResult, type ArtifactUi, type SubagentResultMeta } from "@/src/core";
 import type { PdfResult, ResearchResult, SubagentArtifactData } from "@/src/core";
 import type { LhViewMessage } from "@/src/core";
 import { isSubagentFailure } from "@/src/core";
@@ -26,6 +29,8 @@ import { VisualOutputCard } from "@/components/artifacts/visual-card";
  *     render; only a failure note does.
  */
 export function SubagentSteerCard({ message }: { message: LhViewMessage }) {
+	const jobs = useContext(JobsContext);
+	const slots = useContext(ArtifactSlotsContext);
 	const artifactPart = message.parts.find((p) => p.type === "data-subagent-artifact");
 	const data = artifactPart?.data as SubagentArtifactData | undefined;
 	// The abort steer (2026-09 dock semantics): its message-type part is
@@ -42,23 +47,38 @@ export function SubagentSteerCard({ message }: { message: LhViewMessage }) {
 			</div>
 		);
 	}
-	switch (data.kind) {
+	const meta = (message.metadata as { subagentResult?: SubagentResultMeta } | undefined)?.subagentResult;
+	const job = jobs.find((entry) => entry.id === (data.artifactId ?? meta?.jobId));
+	if (job && jobResult(job) && meta && slots?.has(meta.toolCallId)) return null;
+	const result = data.artifactId ? job && jobResult(job) : data.result;
+	if (!result) return <div className="text-sm text-muted-foreground">Artifact unavailable.</div>;
+	return <JobResultCard kind={data.kind} result={result} artifactId={job?.id} messageId={message.id} ui={job?.ui ?? data.ui} />;
+}
+
+export function JobResultCard({ kind, result, artifactId, messageId, ui }: {
+	kind: JobKind;
+	result: JobResult;
+	artifactId?: string;
+	messageId?: string;
+	ui?: ArtifactUi;
+}) {
+	switch (kind) {
 		case "research":
-			return isSubagentFailure("research", data.result as ResearchResult) ? (
-				<ResearchBriefCard output={data.result} />
+			return isSubagentFailure("research", result as ResearchResult) ? (
+				<ResearchBriefCard output={result} />
 			) : (
-				<ResearchCompleteBadge result={data.result as ResearchResult} />
+				<ResearchCompleteBadge result={result as ResearchResult} />
 			);
 		case "pdf":
-			return isSubagentFailure("pdf", data.result as PdfResult) ? (
-				<PdfBriefCard output={data.result} />
+			return isSubagentFailure("pdf", result as PdfResult) ? (
+				<PdfBriefCard output={result} />
 			) : (
-				<PdfCompleteBadge result={data.result as PdfResult} />
+				<PdfCompleteBadge result={result as PdfResult} />
 			);
 		case "demo":
-			return <DemoOutputCard output={data.result} messageId={message.id} initialInverted={data.ui?.inverted ?? false} />;
+			return <DemoOutputCard output={result} artifactId={artifactId} messageId={messageId} initialInverted={ui?.inverted ?? false} />;
 		case "visual":
-			return <VisualOutputCard output={data.result} messageId={message.id} initialInverted={data.ui?.inverted ?? false} />;
+			return <VisualOutputCard output={result} artifactId={artifactId} messageId={messageId} initialInverted={ui?.inverted ?? false} />;
 	}
 }
 

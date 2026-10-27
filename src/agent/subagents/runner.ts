@@ -2,7 +2,6 @@ import type { PiEngine } from "../models.ts";
 import type { SearchProvider } from "../../core/search.ts";
 import {
 	accumulateJobUsage,
-	buildSubagentSteer,
 	piUsageToStep,
 	type DemoResult,
 	type DemoToolInput,
@@ -294,12 +293,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		return undefined;
 	}
 
-	/**
-	 * The tail of every job: store the result, build the steer, hand it to
-	 * the wake pipeline. The pipeline flips the status when the lesson has
-	 * actually resumed — until then the job reads "running" so the client's
-	 * activity card keeps polling and re-syncs once, at the end.
-	 */
+	/** Save completion and its notification together before attempting delivery. */
 	async function finishJob(jobId: string, result: ResearchResult | DemoResult | VisualResult | PdfResult): Promise<void> {
 		const job = jobStore.getJob(jobId);
 		if (!job) return;
@@ -307,14 +301,15 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		// the loop unwinds): no result write, no steer — the abort path owns
 		// the record and queues the abort steer itself.
 		if (job.status !== "running") return;
-		jobStore.updateJob(jobId, { result, activity: "delivering result" });
-		const steer = buildSubagentSteer(job, result);
+		const completed = jobStore.completeJob(jobId, result);
+		if (!completed || completed.delivery?.state !== "pending") return;
+		const steer = completed.delivery.message;
 		try {
 			await deliver(steer);
 		} catch (err) {
 			const reason = err instanceof Error ? err.message : String(err);
 			console.error(`[job ${jobId}] steer delivery failed:`, err);
-			jobStore.updateJob(jobId, { status: "error", error: reason, activity: "delivery failed" });
+			jobStore.updateJob(jobId, { delivery: { state: "failed", error: reason }, activity: "teacher notification failed" });
 		}
 	}
 

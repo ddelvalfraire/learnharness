@@ -369,6 +369,7 @@ function projectMarker(marker: LhMarkerMessage, out: LhViewMessage[]): void {
 				kind: SubagentArtifactData["kind"];
 				result: SubagentArtifactData["result"];
 				ui?: SubagentArtifactData["ui"];
+				artifactId?: string;
 			};
 			out.push({
 				id: marker.id,
@@ -379,7 +380,9 @@ function projectMarker(marker: LhMarkerMessage, out: LhViewMessage[]): void {
 					{
 						type: "data-subagent-artifact",
 						id: `sa_${marker.id}`,
-						data: { kind: artifact.kind, result: artifact.result, ui: artifact.ui },
+						data: artifact.artifactId
+							? { kind: artifact.kind, artifactId: artifact.artifactId }
+							: { kind: artifact.kind, result: artifact.result, ui: artifact.ui },
 					},
 				],
 			});

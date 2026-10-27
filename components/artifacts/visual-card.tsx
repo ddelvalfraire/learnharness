@@ -1,13 +1,13 @@
 "use client";
 
-import { useContext, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { ChatActionsContext } from "@/components/chat";
 import { DownloadIcon, MaximizeIcon } from "lucide-react";
 import { InvertDiscIcon } from "@/components/artifacts/invert-disc";
 import { Toggle } from "@/components/settings/controls";
 import { useSessionMermaid } from "@/components/session-overlay";
 import { downloadFile } from "@/components/artifacts/download";
-import { DispatchCard } from "@/components/artifacts/dispatch-card";
+import { JobArtifactCard } from "@/components/artifacts/job-artifact-card";
 import type { ArtifactPartProps, VisualResult } from "@/src/core";
 
 /**
@@ -48,17 +48,19 @@ export function svgNaturalWidth(svg: string): number | null {
 
 export function VisualCard({ part }: ArtifactPartProps) {
 	if (part.state !== "output-available") return null;
-	return <DispatchCard toolCallId={part.toolCallId} kind="visual" />;
+	return <JobArtifactCard toolCallId={part.toolCallId} kind="visual" />;
 }
 
 /** The figure itself — exported: the steer card renders the delivered artifact. */
 export function VisualOutputCard({
 	output,
 	messageId,
+	artifactId,
 	initialInverted = false,
 }: {
 	output: unknown;
 	messageId?: string;
+	artifactId?: string;
 	initialInverted?: boolean;
 }) {
 	const result = output as VisualResult | undefined;
@@ -70,13 +72,14 @@ export function VisualOutputCard({
 	// previews) it stays local-only. The toggled state also feeds the
 	// fullscreen overlay (openFigure).
 	const [inverted, setInverted] = useState(initialInverted);
+	useEffect(() => setInverted(initialInverted), [initialInverted]);
 	const toggleInverted = (next: boolean) => {
 		setInverted(next);
-		if (!actions?.chatId || !messageId) return;
+		if (!actions?.chatId || (!artifactId && !messageId)) return;
 		void fetch(`/api/chats/${actions.chatId}/artifact-ui`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ input: { messageId, inverted: next } }),
+			body: JSON.stringify({ input: { ...(artifactId ? { artifactId } : { messageId }), inverted: next } }),
 		}).catch(() => {});
 	};
 	const natural = result && typeof result.svg === "string" ? svgNaturalWidth(result.svg) : null;
