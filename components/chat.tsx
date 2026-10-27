@@ -34,6 +34,7 @@ import { StatsBar } from "@/components/stats-bar";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import {
 	isProviderKeyRefusal,
+	initialPromptOwed,
 	firstSourceTextParts,
 	messageAnchorId,
 	textPartMessageId,
@@ -250,9 +251,9 @@ export function Chat({
 	// (initialPromptOwed — the pure gate, pinned in the test suite).
 	const sentInitial = useRef(false);
 	useEffect(() => {
-		if (!sentInitial.current && initialPromptOwed(initialMessages, initialPrompt)) {
+		if (!sentInitial.current && initialPrompt && initialPromptOwed(initialMessages, initialPrompt)) {
 			sentInitial.current = true;
-			void send({ type: "text", text: initialPrompt! });
+			void send({ type: "start", text: initialPrompt });
 		}
 	}, [initialPrompt, initialMessages, send]);
 
@@ -1751,19 +1752,6 @@ export function Chat({
  *  then setup (self-closing — the gate only must not fire), then the
  *  2026-10-02 abort chain proper (question before turn). */
 export type EscAbortTarget = "mermaid" | "plan" | "setup" | "question" | "problem" | "turn" | null;
-	/**
- * Does the ?prompt topic still owe its first send? The gate is "no real
- * conversation yet" (no user/assistant message) — NOT emptiness: a
- * session started with map picks carries a graph-context MARKER as
- * message[0], and that scaffolding must never swallow the first send
- * (owner report, 2026-10-04: the turn went dead behind it — the old
- * `length === 0` check saw the marker and refused to fire).
- */
-export function initialPromptOwed(messages: readonly { role: string }[], prompt: string | undefined): boolean {
-	if (!prompt) return false;
-	return !messages.some((m) => m.role === "user" || m.role === "assistant");
-}
-
 export function escAbortTarget(s: {
 	abortAsk: boolean;
 	mermaidFocus: boolean;

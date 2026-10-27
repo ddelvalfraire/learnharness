@@ -55,6 +55,7 @@ import {
 	ChatInputError,
 	inputAppends,
 	parseChatInput,
+	initialPromptOwed,
 	type TurnInput,
 } from "../core/input-events.ts";
 import { steerDelivered } from "../core/contracts.ts";
@@ -181,6 +182,9 @@ export async function handleChatInput(
 	if (!record) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
 	}
+	if (input.type === "start" && !initialPromptOwed(record.messages, record.pendingPrompt)) {
+		return settledTurnResponse();
+	}
 
 	// THE UNIVERSAL TURN GATE (BYOK, owner, 2026-09-22): a turn needs the
 	// CONVERSATION chain — the chat's own model override over the strong
@@ -256,6 +260,14 @@ export async function handleChatInput(
 	);
 	const compactedRecord = stores.chatStore.getChat(chatId);
 	if (compactedRecord) record = compactedRecord;
+	// Re-read after the async gates: another view may have delivered the prompt.
+	// No await separates this check from the turn claim and message save.
+	if (input.type === "start") {
+		if (!initialPromptOwed(record.messages, record.pendingPrompt)) return settledTurnResponse();
+		if (input.text !== record.pendingPrompt) {
+			return Response.json({ error: "Opening prompt does not match the saved session" }, { status: 400 });
+		}
+	}
 
 	// The input's native appends (pure; the honest 400 for an answer with no
 	// pending question call). Computed BEFORE beginTurn so a refused input
@@ -321,6 +333,10 @@ export async function handleChatInput(
 		}
 	} catch (err) {
 		console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
+		if (input.type === "start") {
+			endTurn(chatId);
+			return Response.json({ error: "Could not save the opening message. Please try again." }, { status: 500 });
+		}
 	}
 
 	// MONEY CHANNEL (wave 4): one collector per request, fed by the agent's

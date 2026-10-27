@@ -12,6 +12,7 @@ import { DictationBar, joinDictation, useDictation } from "@/components/dictatio
 import { useFieldCycle } from "@/components/field-cycle";
 import { SidebarToggle } from "@/components/sidebar";
 import { StatsBar } from "@/components/stats-bar";
+import { startSession } from "@/components/start-session";
 import type { TurnUsage } from "@/src/core";
 
 /**
@@ -132,25 +133,12 @@ export function Home({
 		}
 		setBusy(true);
 		try {
-			// The map context (owner, 2026-10-04): picks in EITHER mode ride
-			// the CREATION as graphContext — the server writes a
-			// graph-context marker as message[0] (a separate custom message
-			// before the learner's first user message, propositions + the
-			// chains among them); the prompt stays the learner's own words.
-			const res = await fetch("/api/chats", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					title: t,
-					...(mode === "practice" ? { kind: "practice" } : {}),
-					...(practiceProps.length > 0 ? { graphContext: { propositions: practiceProps } } : {}),
-				}),
+			const target = await startSession({
+				text: t,
+				kind: mode === "practice" ? "practice" : undefined,
+				picks: practiceProps,
 			});
-			const { id } = (await res.json()) as { id: string };
-			// No settings PUT on create (per-session models, owner
-			// 2026-09-28): the SERVER stamps the newborn from the strong
-			// slot — the same default this surface's model control edits.
-			router.push(`/chat/${id}?prompt=${encodeURIComponent(t)}`);
+			if (target) router.push(target);
 		} catch {
 			setBusy(false);
 		}

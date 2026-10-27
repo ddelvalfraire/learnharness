@@ -33,6 +33,8 @@ export interface ChatRecord {
 	createdAt: string;
 	updatedAt: string;
 	messages: LhMessage[];
+	/** Opening message awaiting its first accepted turn. Never stored in a URL. */
+	pendingPrompt?: string;
 	/** The session's kind — absent = teach (pre-practice records). */
 	kind?: ChatKind;
 	/** The session's plan tree (vision §2) — written by plan tools via saveTree. */
