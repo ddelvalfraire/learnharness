@@ -12,6 +12,7 @@ import { useStrongKeyless, useZeroKeys, ZeroKeysPill } from "@/components/setup-
 import { StatsBar } from "@/components/stats-bar";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
 import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
+import { startSession } from "@/components/start-session";
 import type { ChatSettings, GraphSnapshot } from "@/src/core";
 
 /** The draft's pick set (owner round 10): the SAME shape the home pick
@@ -31,41 +32,6 @@ export type DraftPick = { id: string; name: string; statement: string };
  */
 
 const DOCK = "mx-auto w-full max-w-[46rem] px-4";
-
-/**
- * The draft's whole behavior as one pure seam: create the session (title =
- * the first message), persist the lifted pre-chat settings, return the push
- * target — /chat/<id>?prompt=<msg> — whose initialPrompt path delivers the
- * message as turn 1. Injected fetch/router so tests pin the contract.
- * Returns null on empty text; rethrows on transport failure (the caller's
- * busy flag resets).
- */
-export async function startDraftSession(
-	text: string,
-	fetchLike: typeof fetch,
-	mode?: "practice",
-	picks?: readonly DraftPick[],
-): Promise<string | null> {
-	const t = text.trim();
-	if (!t) return null;
-	// THE PICKS RIDE THE CREATE (owner round 10): a practice draft seeded
-	// from the pick bar creates its session WITH the graph context — the
-	// same contract as the home screen's practice send (the marker with
-	// [id] name: statement lines, target validation's truth set).
-	const res = await fetchLike("/api/chats", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(
-			mode === "practice"
-				? { title: t, kind: "practice", ...(picks && picks.length > 0 ? { graphContext: { propositions: picks } } : {}) }
-				: { title: t },
-		),
-	});
-	const { id } = (await res.json()) as { id: string };
-	// No settings PUT on create (per-session models, owner 2026-09-28):
-	// the SERVER stamps the newborn from the strong slot.
-	return `/chat/${id}?prompt=${encodeURIComponent(t)}`;
-}
 
 /** The pure shell (no router) — the render-test seam: the draft view's
  *  visible surface, assembled from the same pieces a fresh chat shows. */
@@ -293,7 +259,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 			return;
 		}
 		// The pre-send KEY guards (owner interlude, no-orphan-chats): guard
-		// BEFORE startDraftSession creates the record — a refused first
+		// BEFORE startSession creates the record — a refused first
 		// send would otherwise leave an orphan error-shell chat in the
 		// sidebar. Same skip-everything-and-open-setup treatment; the
 		// server's 503 gate remains the belt for /chat/[id] sessions.
@@ -302,7 +268,7 @@ export function NewSession({ initialConfigured, mode = "teach" }: { initialConfi
 			return;
 		}
 		setBusy(true);
-		void startDraftSession(draft, fetch, mode === "practice" ? "practice" : undefined, mode === "practice" ? picksRef.current : undefined)
+		void startSession({ text: draft, kind: mode === "practice" ? "practice" : undefined, picks: picksRef.current })
 			.then((target) => {
 				if (target) router.push(target);
 				else setBusy(false);

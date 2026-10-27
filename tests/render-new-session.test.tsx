@@ -4,13 +4,14 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { DraftShell, startDraftSession } from "../components/new-session.tsx";
+import { DraftShell } from "../components/new-session.tsx";
+import { startSession } from "../components/start-session.ts";
 
 /**
  * The sessionless draft view (/chat/new, owner 2026-09-13): "+ New session"
  * opens the draft — NOTHING is created until the first message is sent, and
  * that message becomes the session's title. These pins hold the two seams:
- * startDraftSession (the create-on-send contract) and DraftShell (the
+ * startSession (the create-on-send contract) and DraftShell (the
  * visible surface: composer blob + stats bar + the fresh-chat empty state).
  */
 
@@ -24,28 +25,33 @@ function fakeFetch(id: string) {
 	return { f, calls };
 }
 
-describe("startDraftSession — the create-on-send contract", () => {
-	it("creates the session titled with the first message, returns the prompt redirect", async () => {
+describe("startSession — the create-on-send contract", () => {
+	it("creates the session with the first message, returns a URL containing only its ID", async () => {
 		const { f, calls } = fakeFetch("c_new");
-		const target = await startDraftSession("teach me orbital mechanics", f);
-		assert.equal(target, "/chat/c_new?prompt=teach%20me%20orbital%20mechanics");
+		const target = await startSession({ text: "teach me orbital mechanics", fetchLike: f });
+		assert.equal(target, "/chat/c_new");
 		assert.equal(calls.length, 1);
 		assert.equal(calls[0]!.url, "/api/chats");
 		assert.equal(calls[0]!.method, "POST");
-		assert.deepEqual(calls[0]!.body, { title: "teach me orbital mechanics" });
+		assert.deepEqual(calls[0]!.body, { prompt: "teach me orbital mechanics" });
 	});
 
 	it("no settings PUT on create — the server stamps the newborn (per-session models, owner 2026-09-28)", async () => {
 		const { f, calls } = fakeFetch("c_3");
-		await startDraftSession("hello", f);
+		await startSession({ text: "hello", fetchLike: f });
 		assert.equal(calls.length, 1, "a single create call — the birth stamp is server-side");
 	});
 
 	it("empty or whitespace text never creates anything", async () => {
 		const { f, calls } = fakeFetch("never");
-		assert.equal(await startDraftSession("", f), null);
-		assert.equal(await startDraftSession("   ", f), null);
+		assert.equal(await startSession({ text: "", fetchLike: f }), null);
+		assert.equal(await startSession({ text: "   ", fetchLike: f }), null);
 		assert.equal(calls.length, 0);
+	});
+
+	it("failed creation and invalid IDs never produce a navigation target", async () => {
+		await assert.rejects(startSession({ text: "draft", fetchLike: async () => new Response("", { status: 500 }) }), /Could not create/);
+		await assert.rejects(startSession({ text: "draft", fetchLike: async () => Response.json({ id: "../elsewhere" }) }));
 	});
 });
 
@@ -157,15 +163,15 @@ describe("the practice draft (?mode=practice, 2026-10-04)", () => {
 		assert.ok(!teach.includes('data-testid="practice-props-chip"'));
 	});
 
-	it("startDraftSession carries the picks as graphContext (the home practice contract)", async () => {
+	it("startSession carries the picks as graphContext (the home practice contract)", async () => {
 		let body: Record<string, unknown> | null = null;
 		const f = (async (_url: string, init?: RequestInit) => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c10" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		await startDraftSession("drill me", f, "practice", [{ id: "n_1", name: "Parity", statement: "Odd + odd = even." }]);
+		await startSession({ text: "drill me", fetchLike: f, kind: "practice", picks: [{ id: "n_1", name: "Parity", statement: "Odd + odd = even." }] });
 		assert.deepEqual(body, {
-			title: "drill me",
+			prompt: "drill me",
 			kind: "practice",
 			graphContext: { propositions: [{ id: "n_1", name: "Parity", statement: "Odd + odd = even." }] },
 		});
@@ -177,19 +183,19 @@ describe("the practice draft (?mode=practice, 2026-10-04)", () => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c11" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		await startDraftSession("free practice", f, "practice", []);
-		assert.deepEqual(body, { title: "free practice", kind: "practice" });
+		await startSession({ text: "free practice", fetchLike: f, kind: "practice", picks: [] });
+		assert.deepEqual(body, { prompt: "free practice", kind: "practice" });
 	});
 
-	it("startDraftSession carries kind:\"practice\" to the create route", async () => {
+	it("startSession carries kind:\"practice\" to the create route", async () => {
 		let body: Record<string, unknown> | null = null;
 		const f = (async (_url: string, init?: RequestInit) => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c9" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		const target = await startDraftSession("the parity chain", f, "practice");
-		assert.equal(target, "/chat/c9?prompt=the%20parity%20chain");
-		assert.deepEqual(body, { title: "the parity chain", kind: "practice" });
+		const target = await startSession({ text: "the parity chain", fetchLike: f, kind: "practice" });
+		assert.equal(target, "/chat/c9");
+		assert.deepEqual(body, { prompt: "the parity chain", kind: "practice" });
 	});
 
 	it("the teaching default is unchanged — no kind key on the wire", async () => {
@@ -198,7 +204,7 @@ describe("the practice draft (?mode=practice, 2026-10-04)", () => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c8" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		await startDraftSession("orbital mechanics", f);
-		assert.deepEqual(body, { title: "orbital mechanics" });
+		await startSession({ text: "orbital mechanics", fetchLike: f });
+		assert.deepEqual(body, { prompt: "orbital mechanics" });
 	});
 });

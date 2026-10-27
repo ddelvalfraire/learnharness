@@ -6,9 +6,9 @@
  * like. The 409 merge-retry died with the full-list body (an input event
  * retries idempotently: nothing was appended when a POST is refused).
  *
- * The four events (the complete client-originated input taxonomy):
- *   text    — a learner-authored user message (composer send, initial
- *             topic, the demo error-fix loop)
+ * Client-originated inputs include:
+ *   start   — deliver the saved opening prompt once across retries and views
+ *   text    — a learner-authored user message (composer send, the demo error-fix loop)
  *   answer  — the pending question's graded result (QuestionAnswerData,
  *             built client-side exactly as today; a dismissal is an answer
  *             carrying its flag). Server-side this becomes the call's
@@ -43,6 +43,8 @@ import { QUESTION_TOOLS, toolQuestionKind } from "./pending.ts";
 /** One client-originated input event (the POST body's `input`). */
 export type ChatInput =
 	| { type: "text"; text: string }
+	/** Deliver the saved opening prompt once, including across retries and views. */
+	| { type: "start"; text: string }
 	| { type: "answer"; toolCallId: string; answer: QuestionAnswerData }
 	| { type: "continue" }
 	/** The practice dock's two buttons (owner, 2026-10-04): the learner's
@@ -65,6 +67,11 @@ export type SteerInput = { type: "steers"; steers: LhMessage[] };
 
 /** Every input the turn composition accepts. */
 export type TurnInput = ChatInput | SteerInput;
+
+/** Graph-context markers precede the first message and do not consume the prompt. */
+export function initialPromptOwed(messages: readonly { role: string }[], prompt: string | undefined): boolean {
+	return Boolean(prompt) && !messages.some((m) => m.role === "user" || m.role === "assistant");
+}
 
 /** The dismissal event (owner design 2026-10-03, "A2"): NEVER composes a
  *  turn — the silent route appends + persists and wakes nothing. The
@@ -156,10 +163,11 @@ export function parseChatInput(input: unknown): ChatInput {
 	const i = input as Record<string, unknown>;
 	switch (i.type) {
 		case "text":
+		case "start":
 			if (typeof i.text !== "string" || (i.text as string).trim().length === 0) {
 				throw new ChatInputError("text input requires non-empty text");
 			}
-			return { type: "text", text: i.text };
+			return { type: i.type, text: i.text };
 		case "answer":
 			if (typeof i.toolCallId !== "string" || i.toolCallId.length === 0) {
 				throw new ChatInputError("answer input requires toolCallId");
@@ -200,6 +208,7 @@ export function inputAppends(
 ): LhMessage[] {
 	switch (input.type) {
 		case "text":
+		case "start":
 			return [...dismissalConclusion(record), newUserMessage(input.text)];
 		case "answer": {
 			const pending = danglingQuestionOf(record.messages);

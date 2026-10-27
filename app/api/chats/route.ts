@@ -2,6 +2,14 @@ import { chainsForSelection, formatChainLine } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
 import { compactionInFlight, createChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
+import { z } from "zod";
+
+const createChatBody = z.object({
+	title: z.string().catch(""),
+	prompt: z.string().trim().min(1).optional(),
+	kind: z.unknown().optional(),
+	graphContext: z.unknown().optional(),
+});
 
 /** The session picker's list: record-derived summaries (phase, pending
  *  question) + live liveness — a running turn marks the session busy
@@ -20,12 +28,14 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-	const body = (await req.json().catch(() => ({}))) as { title?: unknown; kind?: unknown; graphContext?: unknown };
-	const title = typeof body.title === "string" ? body.title : "";
+	const parsed = createChatBody.safeParse(await req.json().catch(() => ({})));
+	if (!parsed.success) return Response.json({ error: "Invalid session creation request" }, { status: 400 });
+	const body = parsed.data;
+	const title = body.title || body.prompt || "Untitled session";
 	// Practice sessions (owner, 2026-10-04): kind "practice" marks the
 	// record — the practice agent + its tools from turn 1, no extraction.
 	const kind = body.kind === "practice" ? ("practice" as const) : undefined;
-	const chat = createChat(titleFromPrompt(title || "Untitled session"), kind);
+	const chat = createChat(titleFromPrompt(title), kind, body.prompt);
 	// PER-SESSION MODELS (owner, 2026-09-28): a session owns its model +
 	// thinking level from birth — stamped verbatim from the STRONG slot,
 	// the new-session default. From here the strong slot never reaches

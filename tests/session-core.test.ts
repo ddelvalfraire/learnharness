@@ -231,6 +231,22 @@ describe("postInputEvent (the 409 identity-retry)", { skip: process.env.NO_SLOW 
 // ─── send: optimistic appends + wire consumption ────────────────────────────
 
 describe("send (one input event, verbatim consumption)", () => {
+	it("shows the opening prompt immediately and sends a start event without doubling the saved message", async () => {
+		const posts: string[] = [];
+		globalThis.fetch = dietFetch({
+			onPost: (body) => posts.push(body),
+			userText: "my opening prompt",
+			stream: () => sseResponse("[DONE]"),
+		});
+		const m = model();
+		const pending = m.send({ type: "start", text: "my opening prompt" });
+		assert.equal(m.getState().status, "submitted");
+		assert.equal(m.getState().nativeMessages.find((message) => message.role === "user")?.content, "my opening prompt");
+		await pending;
+		assert.deepEqual(JSON.parse(posts[0]!), { chatId: "chat_x", input: { type: "start", text: "my opening prompt" } });
+		assert.equal(m.getState().nativeMessages.filter((message) => message.role === "user").length, 1);
+	});
+
 	it("optimistically appends the text, POSTs {chatId, input}, consumes to [DONE]", async () => {
 		const posts: string[] = [];
 		globalThis.fetch = dietFetch({
