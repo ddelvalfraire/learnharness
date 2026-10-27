@@ -226,18 +226,10 @@ export function Chat({
 	 *  only decides whether the pill rides the composer. */
 	initialConfigured?: boolean;
 }) {
-	// Reattach plumbing (background-turn runner wave): the hook holds the
-	// settled terminal's callback — a stable ref assigned below, once
-	// syncFromServer exists (refs, not closures: no stale capture).
+	// The callback changes each render; the stream handler reads the latest one.
 	const reattachSettledRef = useRef<() => void>(() => {});
 
-	// THE SESSION HOOK (Wave D, owner-approved 2026-09-26): the app-owned
-	// replacement for useChat + the AI-SDK transport. The record is native
-	// history; the VIEW (grouped, golden-master) is derived client-side
-	// (core/view.ts projectView); sends are ONE explicit input event each
-	// ({chatId, input} — the stash indirection died with the SDK), and the
-	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
-	const { messages, nativeMessages, contextTokens, send, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
+	const { messages, nativeMessages, contextTokens, send, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, syncRecord, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
 		useChatSession({ chatId, initialMessages, initiallyInFlight });
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
@@ -572,41 +564,20 @@ export function Chat({
 			.catch(() => {});
 	});
 	const [setupOpen, setSetupOpen] = useState(false);
-	/** The last explicitly-sent draft (composer send): the
-	 *  refusal flow restores it into the composer, where it waits for the
-	 *  learner to re-send (Save never auto-sends, owner 2026-10-09).
-	 *  Auto-continuations (probe answers) never set it — their refusal
-	 *  opens the dialog with no replay. */
+	// Keep the learner's last draft so setup recovery can restore it.
 	const draftRef = useRef<string | null>(null);
 
-	// THE BYOK REFUSAL (owner, 2026-09-22): a send that lands the server's
-	// 503 models_not_configured envelope renders as the SETUP FLOW, never
-	// the error banner. The gate refuses BEFORE the write-ahead persist,
-	// so the server record is the truth minus the refused send — the
-	// optimistic message is an orphan that goes HOME: refetch the record,
-	// drop the orphan, put the draft back in the composer, open the
-	// dialog (the prefilled tiers carry their picks, the unpinned ones the
-	// "needed" marks). The draft stays in the composer until the learner
-	// re-sends it (owner ruling 2026-10-09).
+	// Missing model or key settings open setup and restore the unsent draft.
+	// The learner sends it again after finishing setup.
 	useEffect(() => {
 		if (!error) return;
 		const missing = parseModelsRefusal(error.message);
-		// The key-refusal twin (zero-keys wave): a pinned model whose
-		// provider key is gone gets the SAME treatment — revert-draft and
-		// open setup (the dialog derives to its first-key stage on its own).
 		const keyRefused = parseProviderKeyRefusal(error.message);
-		if (!missing && !keyRefused) return; // a real error keeps the honest banner
-		// ORDER MATTERS: clearError() flips this effect's own dep (`error`)
-		// and would cancel the in-flight work below — so the banner dismiss,
-		// the draft restore, and the dialog open all land TOGETHER after the
-		// record refetch (the honest truth minus the refused send).
+		if (!missing && !keyRefused) return;
+		// Clearing the error before the refresh finishes would cancel this effect.
 		let cancelled = false;
 		void (async () => {
-			const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`);
-			if (!cancelled && res.ok) {
-				const record = (await res.json().catch(() => null)) as { messages?: LhMessage[] } | null;
-				if (Array.isArray(record?.messages)) setMessages(record.messages);
-			}
+			await syncRecord();
 			if (cancelled) return;
 			if (draftRef.current !== null) {
 				applyText(draftRef.current);
@@ -618,8 +589,6 @@ export function Chat({
 		return () => {
 			cancelled = true;
 		};
-		// (setMessages/clearError are stable per useChat instance — the
-		//  dep pair [error, chatId] is what the flow actually keys on.)
 	}, [error, chatId]);
 	// Voice dictation (STT wave, 2026-09-17): finals append at the end of
 	// the current text (the page owns the separator, dictate-flush style);
@@ -716,28 +685,13 @@ export function Chat({
 	useEnterSubmits(sendNext);
 
 	const syncFromServer = useCallback(async () => {
-		const res = await fetch(`/api/chats/${chatId}`);
-		if (!res.ok) return;
-		const record = (await res.json()) as { messages?: LhMessage[]; turns?: TurnUsage[]; pricing?: SessionPricing };
+		const record = await syncRecord({ continueTurn: true });
+		if (!record) return;
 		if (Array.isArray(record.turns)) setTurns(record.turns);
 		setPricing(record.pricing);
-		if (!Array.isArray(record.messages)) return;
-		setMessages(record.messages);
-		// The continuation seam (contracts.ts protocol §4): a job result
-		// landing in the record leaves the agent owing a continuation — the
-		// record ENDS on un-consumed results, the dock owns no question, and
-		// nothing runs. The native fold (needsContinuation) is the old SDK
-		// lastAssistantMessageIsCompleteWithToolCalls check.
-		if (status === "ready" && needsContinuation(record.messages)) {
-			void send({ type: "continue" });
-		}
-	}, [chatId, setMessages, send, status]);
+	}, [syncRecord]);
 
-	// The settled terminal's other half (stream-reattach wave): the
-	// transport resolved turn-settled — no turn running, the record is
-	// current. Drop the fallback busy state and adopt the record (its
-	// continuation check fires the owed next turn, exactly as the poll's
-	// settle branch always did).
+	// Reattachment found a completed turn, so load the saved session.
 	reattachSettledRef.current = () => {
 		setTurnInFlight(false);
 		void syncFromServer();
@@ -922,16 +876,14 @@ export function Chat({
 		// pipeline announces every phase on the events channel.)
 	}, [status, syncTurns, syncFromServer]);
 
-	// A stream that died MID-FLIGHT (network): the runner decoupled the turn
-	// from its view, so the server turn runs ON behind the error banner —
-	// re-enter the in-flight watch (the 1500ms fallback poll adopts at
-	// settle) instead of leaving the session blind until the next send's
-	// 409 merge-retry heals it. One record check per error transition.
+	// A failed connection can leave the server's turn running.
+	// Reattach if it is still running; otherwise load the completed session.
 	const prevErrorStatusRef = useRef(status);
 	useEffect(() => {
 		const was = prevErrorStatusRef.current;
 		prevErrorStatusRef.current = status;
 		if (was === "error" || status !== "error") return;
+		if (parseModelsRefusal(error?.message) || parseProviderKeyRefusal(error?.message)) return;
 		let cancelled = false;
 		void (async () => {
 			try {
@@ -942,13 +894,13 @@ export function Chat({
 				if (record.turnInFlight === true) setTurnInFlight(true);
 				else void syncFromServer();
 			} catch {
-				/* transient — the banner stands; the next send's merge-retry heals */
+				// Keep the error visible if the session cannot be refreshed.
 			}
 		})();
 		return () => {
 			cancelled = true;
 		};
-	}, [status, chatId, syncFromServer]);
+	}, [status, error, chatId, syncFromServer]);
 
 	// ── Central job observability (contracts.ts "THE ASYNC PROTOCOL" §4) ──
 	// ONE fetch of /api/jobs drives every job surface (transcript dispatch

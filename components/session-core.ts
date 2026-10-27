@@ -25,14 +25,21 @@ import {
 	newUserMessage,
 	projectView,
 	type ChatInput,
+	type ChatRecord,
 	type LhMarkerMessage,
 	type LhMessage,
 	type LhViewMessage,
 	type LiveExecution,
 	type QuestionAnswerData,
+	type SessionPricing,
 } from "../src/core";
 
 export type SessionStatus = "ready" | "submitted" | "streaming" | "error";
+
+type SessionRecord = Pick<ChatRecord, "messages" | "turns"> & {
+	pricing?: SessionPricing;
+	turnInFlight?: boolean;
+};
 
 /** How often to poll turnInFlight while a racing turn runs (409 retry). */
 export const TURN_POLL_MS = 500;
@@ -234,6 +241,8 @@ export class SessionModel {
 	// The single live consume (POST response or reattach stream): a newer
 	// consume cancels the older — one reader at a time.
 	private consumeAbort: AbortController | null = null;
+	private revision = 0;
+	private recordRequest = 0;
 	/** Synchronous ready check for the gate (send/read mount logic). */
 	readyRef = true;
 
@@ -285,14 +294,17 @@ export class SessionModel {
 		return this.statusValue;
 	}
 
-	/** Mutate model state + notify (the hook re-renders). */
 	private mutate(fn: () => void): void {
+		this.revision++;
 		fn();
 		this.onChange?.();
 	}
 
 	private setStatus(status: SessionStatus): void {
-		if (status === "submitted") this.liveFailureId = null;
+		if (status === "submitted" || status === "error") this.revision++;
+		if (status === "submitted") {
+			this.liveFailureId = null;
+		}
 		this.statusValue = status;
 		this.readyRef = status === "ready";
 		this.onChange?.();
@@ -729,9 +741,9 @@ export class SessionModel {
 		}
 	}
 
-	/** Local detach: cancel the consume, keep the partial tail. The page's
-	 *  settle watch adopts the record when the server turn finishes. */
+	/** Disconnect the client without stopping the server's turn. */
 	stop(): void {
+		this.revision++;
 		this.consumeAbort?.abort();
 		this.consumeAbort = null;
 		this.streamingIds = new Set();
@@ -740,13 +752,32 @@ export class SessionModel {
 		this.setStatus("ready");
 	}
 
-	/** Full snapshot swap (the idle settle sync — server canon). */
+	async syncRecord({ continueTurn = false }: { continueTurn?: boolean } = {}): Promise<SessionRecord | null> {
+		const canContinue = continueTurn && this.readyRef;
+		const revision = this.revision;
+		const request = ++this.recordRequest;
+		const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`);
+		if (!res.ok) return null;
+		const record = (await res.json()) as SessionRecord;
+		if (!Array.isArray(record.messages)) return null;
+		// A late response must not replace an answer or newer streamed messages.
+		if (request !== this.recordRequest || revision !== this.revision) return null;
+		if (this.statusValue === "submitted" || this.statusValue === "streaming" || record.turnInFlight === true) return null;
+		this.setMessages(record.messages);
+		// Allow another submission, but keep the error visible until the learner retries.
+		if (this.statusValue === "error" && record.turnInFlight === false) this.setStatus("ready");
+		if (canContinue && this.readyRef && needsContinuation(record.messages)) {
+			void this.send({ type: "continue" });
+		}
+		return record;
+	}
+
 	setMessages(record: LhMessage[]): void {
 		this.mutate(() => {
 			this.base = record;
 			this.incompleteUsageIds.clear();
 			this.tail = [];
-			this.streamingMessageId = null; // the tail (and its slot) is gone
+			this.streamingMessageId = null;
 		});
 	}
 
