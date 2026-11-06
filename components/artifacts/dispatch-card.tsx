@@ -6,6 +6,8 @@ import { JobsContext } from "@/components/jobs-context";
 import { ChatActionsContext } from "@/components/chat";
 import { isModelsRefusal, isProviderKeyRefusal, type JobKind, type JobRecord } from "@/src/core";
 import { BrailleSpinner } from "@/components/braille-spinner";
+import { DemoOutputCard } from "@/components/artifacts/demo-card";
+import { VisualOutputCard } from "@/components/artifacts/visual-card";
 
 /**
  * The dispatch card (contracts.ts "THE ASYNC PROTOCOL" §4): the tool-call
@@ -18,6 +20,10 @@ import { BrailleSpinner } from "@/components/braille-spinner";
  *   done/error  → quiet one-liner ("finished" / "failed") — the artifact
  *                 itself arrives in the steer message right below, so the
  *                 box must not duplicate it.
+ *   done, delivery pending (demo/visual) → the artifact itself, until the
+ *                 teacher's turn delivers the steer (it can wait behind an
+ *                 open question). Brightness changes here are not saved:
+ *                 they are stored on the steer, which does not exist yet.
  */
 const KIND_LABEL: Record<JobKind, string> = {
 	research: "Research agent",
@@ -45,6 +51,10 @@ export function DispatchCard({ toolCallId, kind }: { toolCallId: string; kind: J
 	}
 	if (isProviderKeyRefusal(job.error)) {
 		return <DispatchRefusedCard label={label} line="needs a provider key" button="Add a key" />;
+	}
+	if (job.status === "done" && job.delivery?.kind === "result" && job.delivery.status === "pending" && job.result !== undefined) {
+		if (job.kind === "demo") return <DemoOutputCard output={job.result} />;
+		if (job.kind === "visual") return <VisualOutputCard output={job.result} />;
 	}
 	const failed = job.status === "error";
 	return (

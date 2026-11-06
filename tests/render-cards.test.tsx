@@ -162,6 +162,60 @@ describe("DispatchCard — the BYOK refusal tone (owner, 2026-09-22)", () => {
 	});
 });
 
+describe("DispatchCard — a finished artifact waiting for delivery", () => {
+	const job = (over: Partial<JobRecord>): JobRecord => ({
+		id: "j1",
+		kind: "demo",
+		chatId: "c1",
+		toolCallId: "t1",
+		status: "done",
+		activity: "",
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+		...over,
+	});
+	const render = (record: JobRecord) => renderToStaticMarkup(
+		<JobsContext.Provider value={[record]}>
+			<ChatActionsContext.Provider
+				value={{ chatId: "c1", syncFromServer: async () => {}, sendText: () => {}, openSetup: () => {} }}
+			>
+				<DispatchCard toolCallId="t1" kind={record.kind} />
+			</ChatActionsContext.Provider>
+		</JobsContext.Provider>,
+	);
+	const demo = { title: "Pendulum", html: "<p>swing</p>", tested: true };
+	const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>';
+
+	it("shows a finished demo before the teacher's turn delivers it", () => {
+		const html = render(job({ result: demo, delivery: { kind: "result", status: "pending" } }));
+		assert.ok(html.includes('data-testid="demo-card"'));
+		assert.ok(!html.includes('data-testid="dispatch-settled"'));
+	});
+
+	it("shows a finished figure before the teacher's turn delivers it", () => {
+		const html = render(job({ kind: "visual", result: { svg }, delivery: { kind: "result", status: "pending" } }));
+		assert.ok(html.includes('data-testid="visual-card"'));
+		assert.ok(!html.includes('data-testid="dispatch-settled"'));
+	});
+
+	it("goes back to the one-line status once delivered, so the steer card is the only copy", () => {
+		const html = render(job({ result: demo, delivery: { kind: "result", status: "delivered" } }));
+		assert.ok(html.includes('data-testid="dispatch-settled"'));
+		assert.ok(!html.includes('data-testid="demo-card"'));
+	});
+
+	it("keeps the one-line status for legacy jobs without a delivery record", () => {
+		const html = render(job({ result: demo }));
+		assert.ok(html.includes('data-testid="dispatch-settled"'));
+		assert.ok(!html.includes('data-testid="demo-card"'));
+	});
+
+	it("keeps research results in the delivered badge, not the dispatch card", () => {
+		const html = render(job({ kind: "research", result: { brief: "b", sources: [] }, delivery: { kind: "result", status: "pending" } }));
+		assert.ok(html.includes('data-testid="dispatch-settled"'));
+	});
+});
+
 describe("render smoke tests", () => {
 	it("QuizCard renders question, options, and the automatic 'I don't know'", () => {
 		const html = renderDock({ toolName: "quiz", toolCallId: "q1", input: quizInput as never });
