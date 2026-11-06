@@ -257,7 +257,7 @@ export function Chat({
 	// (core/view.ts projectView); sends are ONE explicit input event each
 	// ({chatId, input} — the stash indirection died with the SDK), and the
 	// turn stream is the VERBATIM AgentEvent passthrough the server emits.
-	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, setMessages, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
+	const { messages, nativeMessages, hasConfirmedConversation, contextTokens, send, continueIfOwed, steer, steerQueue, submitAnswer, dismissQuestion, dismissProblem, questionDraft, saveQuestionDraft, syncRecord, adoptRecord, status, error, stop, clearError, resumeStream, setReattachSettled } =
 		useChatSession({ chatId, initialMessages, initialError, initiallyInFlight });
 
 	const sessionFindScopeRef = useRef<HTMLDivElement | null>(null);
@@ -667,11 +667,7 @@ export function Chat({
 		// record refetch (the honest truth minus the refused send).
 		let cancelled = false;
 		void (async () => {
-			const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`);
-			if (!cancelled && res.ok) {
-				const record = (await res.json().catch(() => null)) as { messages?: LhMessage[] } | null;
-				if (Array.isArray(record?.messages)) setMessages(record.messages);
-			}
+			await syncRecord().catch(() => null);
 			if (cancelled) return;
 			if (draftRef.current !== null) {
 				applyText(draftRef.current);
@@ -684,7 +680,7 @@ export function Chat({
 		return () => {
 			cancelled = true;
 		};
-		// (setMessages/clearError are stable per useChat instance — the
+		// (syncRecord/clearError are stable per useChat instance — the
 		//  dep pair [error, chatId] is what the flow actually keys on.)
 	}, [error, chatId]);
 	// Voice dictation (STT wave, 2026-09-17): finals append at the end of
@@ -787,13 +783,12 @@ export function Chat({
 	useEnterSubmits(sendNext);
 
 	const syncFromServer = useCallback(async () => {
-		const res = await fetch(`/api/chats/${chatId}`);
-		if (!res.ok) return;
-		const record = (await res.json()) as { messages?: LhMessage[]; turns?: TurnUsage[]; pricing?: SessionPricing; turnError?: string };
+		// syncRecord drops a response the view has already moved past (a
+		// late refresh must not bring back an answered question).
+		const record = await syncRecord();
+		if (!record) return;
 		if (Array.isArray(record.turns)) setTurns(record.turns);
 		setPricing(record.pricing);
-		if (!Array.isArray(record.messages)) return;
-		setMessages(record.messages, record.turnError);
 		// The continuation seam (contracts.ts protocol §4): a job result
 		// landing in the record leaves the agent owing a continuation — the
 		// record ENDS on un-consumed results, the dock owns no question, and
@@ -802,7 +797,7 @@ export function Chat({
 		// Current model truth also guards retained/live failures: canonical
 		// sync must never automatically replace a reply that failed to save.
 		continueIfOwed(record.messages);
-	}, [chatId, setMessages, continueIfOwed]);
+	}, [syncRecord, continueIfOwed]);
 
 	// The settled terminal's other half (stream-reattach wave): the
 	// transport resolved turn-settled — no turn running, the record is
