@@ -33,9 +33,20 @@ import {
 	type LiveExecution,
 	type QuestionAnswerData,
 	type QuestionDraft,
+	type SessionPricing,
+	type TurnUsage,
 } from "../src/core";
 
 export type SessionStatus = "ready" | "submitted" | "streaming" | "error";
+
+/** The fields of GET /api/chats/[id] the session view reads. */
+export interface SessionRecord {
+	messages: LhMessage[];
+	turns?: TurnUsage[];
+	pricing?: SessionPricing;
+	turnInFlight?: boolean;
+	turnError?: string;
+}
 
 /** How often to poll turnInFlight while a racing turn runs (409 retry). */
 export const TURN_POLL_MS = 500;
@@ -262,6 +273,10 @@ export class SessionModel {
 	/** Retain the latest request across stop(): an opening POST still owns
 	 * its refusal after view detachment, but never after a newer request. */
 	private latestRequest: AbortController | null = null;
+	/** Bumped by every local change a saved-session refresh could overwrite. */
+	private revision = 0;
+	/** Only the newest refresh may apply its response. */
+	private recordRequest = 0;
 	/** Synchronous ready check for the gate (send/read mount logic). */
 	readyRef = true;
 
@@ -318,11 +333,13 @@ export class SessionModel {
 
 	/** Mutate model state + notify (the hook re-renders). */
 	private mutate(fn: () => void): void {
+		this.revision++;
 		fn();
 		this.onChange?.();
 	}
 
 	private setStatus(status: SessionStatus): void {
+		if (status === "submitted" || status === "error") this.revision++;
 		if (status === "submitted") this.liveFailureId = null;
 		this.statusValue = status;
 		this.readyRef = status === "ready";
@@ -894,6 +911,7 @@ export class SessionModel {
 	/** Local detach: cancel the consume, keep the partial tail. The page's
 	 *  settle watch adopts the record when the server turn finishes. */
 	stop(): void {
+		this.revision++;
 		this.consumeAbort?.abort();
 		this.consumeAbort = null;
 		this.streamingIds = new Set();
@@ -919,6 +937,24 @@ export class SessionModel {
 		for (const [id, key] of this.unconfirmedAnswers) {
 			if (key !== pendingKey) this.unconfirmedAnswers.delete(id);
 		}
+	}
+
+	/** Load the saved session and replace the local view with it. Returns
+	 *  null without applying anything when the response is out of date:
+	 *  a newer refresh started, the view changed while it loaded (an
+	 *  answer, streamed messages, adoption, detach), or a turn is running. */
+	async syncRecord(): Promise<SessionRecord | null> {
+		const revision = this.revision;
+		const request = ++this.recordRequest;
+		const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`);
+		if (!res.ok) return null;
+		const record = (await res.json()) as Partial<SessionRecord>;
+		if (!Array.isArray(record.messages)) return null;
+		// Checked after the body loads: the view may change while it streams.
+		if (request !== this.recordRequest || revision !== this.revision) return null;
+		if (this.statusValue === "submitted" || this.statusValue === "streaming" || record.turnInFlight === true) return null;
+		this.setMessages(record.messages, record.turnError);
+		return record as SessionRecord;
 	}
 
 	/** Full snapshot swap (the idle settle sync — server canon). */
