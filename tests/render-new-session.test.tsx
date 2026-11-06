@@ -2,16 +2,30 @@ import React from "react";
 (globalThis as Record<string, unknown>).React = React;
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { DraftShell } from "../components/new-session.tsx";
-import { startSession } from "../components/start-session.ts";
+import { DraftShell, startDraftSession } from "../components/new-session.tsx";
+import { clearOpeningPrompt, readOpeningPrompt, OPENING_PROMPT_FAILURE } from "../components/opening-prompt.ts";
+
+const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+beforeEach(() => {
+	const data = new Map<string, string>();
+	Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: {
+		getItem: (key: string) => data.get(key) ?? null,
+		setItem: (key: string, value: string) => { data.set(key, value); },
+		removeItem: (key: string) => { data.delete(key); },
+	} });
+});
+afterEach(() => {
+	if (originalStorage) Object.defineProperty(globalThis, "sessionStorage", originalStorage);
+	else Reflect.deleteProperty(globalThis, "sessionStorage");
+});
 
 /**
  * The sessionless draft view (/chat/new, owner 2026-09-13): "+ New session"
  * opens the draft — NOTHING is created until the first message is sent, and
  * that message becomes the session's title. These pins hold the two seams:
- * startSession (the create-on-send contract) and DraftShell (the
+ * startDraftSession (the create-on-send contract) and DraftShell (the
  * visible surface: composer blob + stats bar + the fresh-chat empty state).
  */
 
@@ -25,37 +39,69 @@ function fakeFetch(id: string) {
 	return { f, calls };
 }
 
-describe("startSession — the create-on-send contract", () => {
-	it("creates the session with the first message, returns a URL containing only its ID", async () => {
+describe("startDraftSession — the create-on-send contract", () => {
+	it("creates the session titled with the first message and returns a short path", async () => {
 		const { f, calls } = fakeFetch("c_new");
-		const target = await startSession({ text: "teach me orbital mechanics", fetchLike: f });
+		const target = await startDraftSession("teach me orbital mechanics", f);
 		assert.equal(target, "/chat/c_new");
 		assert.equal(calls.length, 1);
 		assert.equal(calls[0]!.url, "/api/chats");
 		assert.equal(calls[0]!.method, "POST");
-		assert.deepEqual(calls[0]!.body, { prompt: "teach me orbital mechanics" });
+		assert.deepEqual(calls[0]!.body, { title: "teach me orbital mechanics" });
 	});
 
 	it("no settings PUT on create — the server stamps the newborn (per-session models, owner 2026-09-28)", async () => {
 		const { f, calls } = fakeFetch("c_3");
-		await startSession({ text: "hello", fetchLike: f });
+		await startDraftSession("hello", f);
 		assert.equal(calls.length, 1, "a single create call — the birth stamp is server-side");
+	});
+
+	it("a long opening text stays out of the URL and is stashed for the chat page", async () => {
+		const mem = new Map<string, string>();
+		const fake = {
+			getItem: (k: string) => mem.get(k) ?? null,
+			setItem: (k: string, v: string) => {
+				mem.set(k, v);
+			},
+			removeItem: (k: string) => {
+				mem.delete(k);
+			},
+		};
+		const holder = globalThis as { sessionStorage?: Storage };
+		const prev = holder.sessionStorage;
+		Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: fake });
+		try {
+			const { f } = fakeFetch("c_long");
+			const text = `${"B2 First grammar item. ".repeat(1500)}end`;
+			const target = await startDraftSession(text, f);
+			assert.equal(target, "/chat/c_long");
+			assert.equal(target!.includes("?"), false);
+			const stashed = readOpeningPrompt("c_long");
+			assert.equal(stashed?.length, text.length);
+			assert.equal(stashed, text);
+			clearOpeningPrompt("c_long");
+			assert.equal(readOpeningPrompt("c_long"), undefined);
+		} finally {
+			if (prev === undefined) delete holder.sessionStorage;
+			else Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: prev });
+		}
 	});
 
 	it("empty or whitespace text never creates anything", async () => {
 		const { f, calls } = fakeFetch("never");
-		assert.equal(await startSession({ text: "", fetchLike: f }), null);
-		assert.equal(await startSession({ text: "   ", fetchLike: f }), null);
+		assert.equal(await startDraftSession("", f), null);
+		assert.equal(await startDraftSession("   ", f), null);
 		assert.equal(calls.length, 0);
-	});
-
-	it("failed creation and invalid IDs never produce a navigation target", async () => {
-		await assert.rejects(startSession({ text: "draft", fetchLike: async () => new Response("", { status: 500 }) }), /Could not create/);
-		await assert.rejects(startSession({ text: "draft", fetchLike: async () => Response.json({ id: "../elsewhere" }) }));
 	});
 });
 
 describe("DraftShell — the sessionless surface", () => {
+	it("storage failure leaves the full draft editable beside the approved error", () => {
+		const html = renderToStaticMarkup(<DraftShell busy={false} text="keep all my text" onChange={() => {}} onSend={() => {}} startError />);
+		assert.ok(html.includes('role="alert"'));
+		assert.ok(html.includes(OPENING_PROMPT_FAILURE));
+		assert.match(html, /<div[^>]*role="textbox"[^>]*contentEditable="true"[^>]*>keep all my text<\/div>/);
+	});
 	it("renders the composer blob, the stats bar, and the fresh-chat empty state", () => {
 		const html = renderToStaticMarkup(
 			<DraftShell
@@ -163,15 +209,15 @@ describe("the practice draft (?mode=practice, 2026-10-04)", () => {
 		assert.ok(!teach.includes('data-testid="practice-props-chip"'));
 	});
 
-	it("startSession carries the picks as graphContext (the home practice contract)", async () => {
+	it("startDraftSession carries the picks as graphContext (the home practice contract)", async () => {
 		let body: Record<string, unknown> | null = null;
 		const f = (async (_url: string, init?: RequestInit) => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c10" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		await startSession({ text: "drill me", fetchLike: f, kind: "practice", picks: [{ id: "n_1", name: "Parity", statement: "Odd + odd = even." }] });
+		await startDraftSession("drill me", f, "practice", [{ id: "n_1", name: "Parity", statement: "Odd + odd = even." }]);
 		assert.deepEqual(body, {
-			prompt: "drill me",
+			title: "drill me",
 			kind: "practice",
 			graphContext: { propositions: [{ id: "n_1", name: "Parity", statement: "Odd + odd = even." }] },
 		});
@@ -183,19 +229,19 @@ describe("the practice draft (?mode=practice, 2026-10-04)", () => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c11" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		await startSession({ text: "free practice", fetchLike: f, kind: "practice", picks: [] });
-		assert.deepEqual(body, { prompt: "free practice", kind: "practice" });
+		await startDraftSession("free practice", f, "practice", []);
+		assert.deepEqual(body, { title: "free practice", kind: "practice" });
 	});
 
-	it("startSession carries kind:\"practice\" to the create route", async () => {
+	it("startDraftSession carries kind:\"practice\" to the create route", async () => {
 		let body: Record<string, unknown> | null = null;
 		const f = (async (_url: string, init?: RequestInit) => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c9" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		const target = await startSession({ text: "the parity chain", fetchLike: f, kind: "practice" });
+		const target = await startDraftSession("the parity chain", f, "practice");
 		assert.equal(target, "/chat/c9");
-		assert.deepEqual(body, { prompt: "the parity chain", kind: "practice" });
+		assert.deepEqual(body, { title: "the parity chain", kind: "practice" });
 	});
 
 	it("the teaching default is unchanged — no kind key on the wire", async () => {
@@ -204,7 +250,7 @@ describe("the practice draft (?mode=practice, 2026-10-04)", () => {
 			body = JSON.parse(String(init?.body));
 			return new Response(JSON.stringify({ id: "c8" }), { status: 201 });
 		}) as unknown as typeof fetch;
-		await startSession({ text: "orbital mechanics", fetchLike: f });
-		assert.deepEqual(body, { prompt: "orbital mechanics" });
+		await startDraftSession("orbital mechanics", f);
+		assert.deepEqual(body, { title: "orbital mechanics" });
 	});
 });

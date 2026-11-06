@@ -28,7 +28,7 @@ describe("web_search on the injected port (web.ts)", () => {
 		assert.ok(web_search, "web_search is still exposed without a provider");
 		const out = await web_search!.execute!("c1", { query: "anything" });
 		const missing = "web_search is not available: no search engine is configured. " +
-			"Set a Tavily or Brave search API key in settings. Report in your brief that web search is unavailable.";
+			"Set a Tavily, Brave, Exa, Firecrawl, or Ollama search API key in settings. Report in your brief that web search is unavailable.";
 		assert.equal(out.details, missing);
 		assert.deepEqual(out.content, [{ type: "text", text: missing }]);
 		assert.notEqual(out.isError, true, "missing keys remain ordinary recoverable text, not a native error");
@@ -206,13 +206,6 @@ function fakeJobStore(): JobStore {
 			const job = jobs.get(id);
 			if (!job) return null;
 			return Object.assign(job, patch);
-		},
-		completeJob(id, result) {
-			const job = jobs.get(id);
-			if (!job) return null;
-			job.result = result;
-			job.status = "done";
-			return job;
 		},
 		listJobs: () => [...jobs.values()],
 		findJobByToolCallId: () => null,

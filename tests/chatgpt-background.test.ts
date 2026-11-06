@@ -1,4 +1,3 @@
-import { durableWake } from "./helpers/durable-wake.ts";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -44,7 +43,7 @@ for (const revokedAfterQueue of [false, true]) {
 		stores.chatStore.saveSettings(chat.id, { model: { provider: "chatgpt", id: "gpt-5" } });
 		const job = stores.jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "scratch-job-call" });
 		const result = { brief: "Scratch completed job result", sources: [] };
-		stores.jobStore.updateJob(job.id, { status: "running", result });
+		stores.jobStore.updateJob(job.id, { status: "done", result, delivery: { kind: "result", status: "pending" } });
 		const marker = buildSubagentSteer(job, result);
 		const contexts: string[] = [];
 		const native = piModels().getModel("openai", "gpt-5")!;
@@ -59,12 +58,12 @@ for (const revokedAfterQueue of [false, true]) {
 			},
 		});
 		let wakes = 0;
-		setTurnRunner(durableWake(stores.chatStore, async (chatId, input) => {
+		setTurnRunner(async (chatId, input) => {
 			wakes++;
 			assert.equal(input.type, "steers");
 			if (input.type === "steers") stores.chatStore.saveMessages(chatId, [...stores.chatStore.getChat(chatId)!.messages, ...input.steers]);
 			return 200;
-		}));
+		});
 		assert(beginTurn(chat.id));
 		registerLiveAgent(chat.id, agent);
 		const delivered = deliverJobResult(marker);
@@ -84,7 +83,8 @@ for (const revokedAfterQueue of [false, true]) {
 		unregisterLiveAgent(chat.id); endTurn(chat.id); settleSteers(chat.id, persisted);
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(wakes, 0, "no background spin or spend while consent is absent");
-		assert.equal(stores.jobStore.getJob(job.id)!.status, "running", "delivery ownership must not be finalized or failed by deferral");
+		assert.equal(stores.jobStore.getJob(job.id)!.delivery?.status, "pending", "delivery ownership must not be finalized or failed by deferral");
+		assert.equal(stores.jobStore.getJob(job.id)!.status, "done", "worker completion is independent of consent deferral");
 		assert.deepEqual(stores.jobStore.getJob(job.id)!.result, result);
 		connection(true);
 		await delivered;
@@ -92,35 +92,3 @@ for (const revokedAfterQueue of [false, true]) {
 		assert.equal(stores.jobStore.getJob(job.id)!.status, "done");
 	});
 }
-
-test("revoked consent during a successful but uncommitted wake keeps the notification pending", { timeout: 5000 }, async () => {
-	connection(true);
-	const chat = stores.chatStore.createChat("Consent revoked during delivery");
-	stores.chatStore.saveSettings(chat.id, { model: { provider: "chatgpt", id: "gpt-5" } });
-	const job = stores.jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "late-consent-job" });
-	const completed = stores.jobStore.completeJob(job.id, { brief: "Completed before revocation", sources: [] });
-	assert.ok(completed?.delivery?.state === "pending");
-	let firstAttempt = () => {};
-	const attempted = new Promise<void>((resolve) => { firstAttempt = resolve; });
-	let wakes = 0;
-	setTurnRunner(async (chatId, input) => {
-		wakes++;
-		if (wakes === 1) {
-			connection(false);
-			firstAttempt();
-			return 200; // The streamed response ended without admitting/persisting the automatic input.
-		}
-		assert.equal(input.type, "steers");
-		if (input.type === "steers") stores.chatStore.saveMessages(chatId, [...stores.chatStore.getChat(chatId)!.messages, ...input.steers]);
-		return 200;
-	});
-	const delivery = deliverJobResult(completed.delivery.message);
-	await attempted;
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(stores.jobStore.getJob(job.id)?.delivery?.state, "pending");
-	assert.equal(wakes, 1);
-	connection(true);
-	await delivery;
-	assert.equal(wakes, 2);
-	assert.equal(stores.jobStore.getJob(job.id)?.delivery?.state, "delivered");
-});

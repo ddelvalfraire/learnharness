@@ -12,13 +12,13 @@
 import type { LhMessage } from "./native-messages.ts";
 import type {
 	ChatRecord,
+	ImageSnapshot,
 	ChatSettings,
 	ChatSummary,
 	GraphChain,
 	GraphNode,
 	JobKind,
 	JobRecord,
-	JobResult,
 	ExtractionRunUsage,
 	PlanTree,
 	Position,
@@ -32,9 +32,10 @@ import type { UserSettings } from "./settings.ts";
 // ─── ChatStore — the session record's home (data/chats) ─────────────────────
 
 export interface ChatStore {
-	/** Persist a new session and its optional opening prompt before navigation.
-	 *  Kind "practice" marks a practice session; absence means teach. */
-	createChat(title: string, kind?: "practice", pendingPrompt?: string): ChatRecord;
+	/** Create a session record (persisted immediately). */
+	/** Create a session record; kind "practice" marks a practice session
+	 *  (absent = teach, the default). */
+	createChat(title: string, kind?: "practice"): ChatRecord;
 	/** The full record, or null if unknown id / corrupt file. */
 	getChat(id: string): ChatRecord | null;
 	/** All sessions, newest activity first (the sidebar's list view). */
@@ -42,6 +43,8 @@ export interface ChatStore {
 	/** Persist the full native message list (the record IS the agent
 	 * state — Wave B, owner-approved 2026-09-26). */
 	saveMessages(id: string, messages: LhMessage[]): void;
+	/** Save a processed picture once, without changing conversation activity/order. */
+	saveImageSnapshot(id: string, snapshotId: string, image: ImageSnapshot): void;
 	/** Persist the session plan tree (plan tools call this in execute). */
 	saveTree(id: string, tree: PlanTree): void;
 	/** Append one usage entry to the record's turn log (the money channel,
@@ -101,6 +104,8 @@ export interface GraphStore {
 	upsertSource(source: NotesSource): void;
 	/** Every notes source record, by id order-insensitive. */
 	readSources(): NotesSource[];
+	/** Remove imported-source bookkeeping only; the service removes graph traces first. */
+	deleteSources(ids: ReadonlySet<string>): number;
 	/** Append one run's usage to a source record — idempotent per
 	 *  startedAt, mirroring ChatRecord.extractions. */
 	appendSourceUsage(id: string, entry: ExtractionRunUsage): void;
@@ -128,6 +133,12 @@ export interface GraphStore {
 	}): void;
 }
 
+/** Separate from graph ledgers and source identity, for future shared views. */
+export interface SourceOrganizationStore {
+	read(): import("./source-organization.ts").SourceOrganization;
+	write(state: import("./source-organization.ts").SourceOrganization): void;
+}
+
 // ─── JobStore — background sub-agent jobs (data/jobs) ─────────────────────────
 
 export interface CreateJobInit {
@@ -136,6 +147,8 @@ export interface CreateJobInit {
 	toolCallId: string;
 	/** First activity line (defaults to "starting"). */
 	activity?: string;
+	/** Saved on the job before its worker is spawned. */
+	input?: unknown;
 }
 
 /** Mergeable fields — identity (id, kind, chatId, toolCallId, createdAt) is immutable. */
@@ -147,8 +160,6 @@ export interface JobStore {
 	getJob(id: string): JobRecord | null;
 	/** Merge a patch into the record; null if unknown id. */
 	updateJob(id: string, patch: JobPatch): JobRecord | null;
-	/** Atomically save the finished artifact and its pending teacher notification. */
-	completeJob(id: string, result: JobResult): JobRecord | null;
 	/** All jobs for a chat, newest activity first. */
 	listJobs(chatId: string): JobRecord[];
 	/** The job fulfilling a given tool part, if any (spawn-hook dedup). */

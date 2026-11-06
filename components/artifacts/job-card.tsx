@@ -1,6 +1,6 @@
 "use client";
 
-import { JobArtifactCard } from "@/components/artifacts/job-artifact-card";
+import { DispatchCard } from "@/components/artifacts/dispatch-card";
 import { MessageResponse } from "@/components/ai-elements/message";
 import type { ArtifactPartProps, PdfResult, ResearchResult } from "@/src/core";
 
@@ -15,7 +15,7 @@ import type { ArtifactPartProps, PdfResult, ResearchResult } from "@/src/core";
  */
 export function JobCard({ part }: ArtifactPartProps) {
 	if (part.state !== "output-available") return null;
-	return <JobArtifactCard toolCallId={part.toolCallId} kind="research" />;
+	return <DispatchCard toolCallId={part.toolCallId} kind="research" />;
 }
 
 /**
@@ -26,7 +26,7 @@ export function JobCard({ part }: ArtifactPartProps) {
  */
 export function PdfJobCard({ part }: ArtifactPartProps) {
 	if (part.state !== "output-available") return null;
-	return <JobArtifactCard toolCallId={part.toolCallId} kind="pdf" />;
+	return <DispatchCard toolCallId={part.toolCallId} kind="pdf" />;
 }
 
 /**

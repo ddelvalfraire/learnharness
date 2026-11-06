@@ -26,7 +26,6 @@ import { catalogContextLimits } from "./model-catalog.ts";
 import { listJobs } from "./jobs.ts";
 import { jobCost } from "./pricing.ts";
 import type { JobRecord } from "../core/contracts.ts";
-import { jobHasWork } from "../core/job-lifecycle.ts";
 
 export { abortExtraction, extractionStatuses, type ExtractionPhase, type RunningExtraction } from "../agent/subagents/extraction.ts";
 export { chatStore } from "../store/chats.ts";
@@ -77,7 +76,7 @@ export function activityFeed(): {
 	const jobs: ActivityJob[] = [];
 	for (const chat of chats) {
 		for (const job of listJobs(chat.id)) {
-			if (jobHasWork(job)) {
+			if (job.status === "running") {
 				jobs.push({
 					...job,
 					costUsd: jobCost(job),
